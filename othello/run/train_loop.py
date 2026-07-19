@@ -28,7 +28,7 @@ from config import Config
 from evaluate import ladder_eval
 from network import Evaluator, OthelloNet
 from replay_buffer import ReplayBuffer
-from selfplay import generate_games
+from selfplay import generate_games, shutdown_selfplay_workers
 from train import make_optimizer, train_steps
 
 DATA_DIR = os.path.normpath(os.path.join(_HERE, "..", "data"))
@@ -130,46 +130,48 @@ def train(cfg, out_dir=DATA_DIR, eval_every=1, log=True, use_tb=False, verbose=T
     buffer = ReplayBuffer(cfg.buffer_size)
     history = []
 
-    for it in range(1, cfg.iterations + 1):
-        # --- self-play ---
-        net.eval()
-        evaluator = Evaluator(net, cfg.device)
-        t0 = time.time()
-        examples, records, sp = generate_games(
-            evaluator, cfg, rng, cfg.games_per_iter, iteration=it, make_records=True)
-        sp_time = time.time() - t0
-        buffer.extend(examples)
-        _write_records(records, rec_dir, it)
-
-        # --- train ---
-        loss = train_steps(net, buffer, optimizer, cfg)
-
-        # --- evaluate (periodic; the expensive part) ---
-        evals = {}
-        if eval_every and it % eval_every == 0:
+    try:
+        for it in range(1, cfg.iterations + 1):
+            # --- self-play ---
             net.eval()
-            evals = ladder_eval(Evaluator(net, cfg.device), cfg, rng)
+            evaluator = Evaluator(net, cfg.device)
+            t0 = time.time()
+            examples, records, sp = generate_games(
+                evaluator, cfg, rng, cfg.games_per_iter, iteration=it, make_records=True)
+            sp_time = time.time() - t0
+            buffer.extend(examples)
+            _write_records(records, rec_dir, it)
 
-        # --- log + checkpoint ---
-        games_per_sec = cfg.games_per_iter / sp_time if sp_time else 0.0
-        row = {"iter": it, "loss": loss, "buffer": len(buffer),
-               "avg_game_len": sp["avg_game_len"], "games_per_sec": games_per_sec,
-               **evals}
-        history.append(row)
+            # --- train ---
+            loss = train_steps(net, buffer, optimizer, cfg)
+
+            # --- evaluate (periodic; the expensive part) ---
+            evals = {}
+            if eval_every and it % eval_every == 0:
+                net.eval()
+                evals = ladder_eval(Evaluator(net, cfg.device), cfg, rng)
+
+            # --- log + checkpoint ---
+            games_per_sec = cfg.games_per_iter / sp_time if sp_time else 0.0
+            row = {"iter": it, "loss": loss, "buffer": len(buffer),
+                   "avg_game_len": sp["avg_game_len"], "games_per_sec": games_per_sec,
+                   **evals}
+            history.append(row)
+            if logger:
+                logger.log(it, flat_metrics(loss, len(buffer), games_per_sec,
+                                            sp["avg_game_len"], evals))
+            save_checkpoint(net, cfg, it, row, os.path.join(ckpt_dir, f"iter{it:04d}.pt"))
+
+            if verbose:
+                wr = (" | " + " ".join(f"d{d}:{w:.0%}" for d, w in evals["winrate"].items())
+                      + f" maxbeat:{evals['max_depth_beaten']}") if evals else ""
+                print(f"iter {it:3d}  loss {loss['total']:.3f} "
+                      f"(p {loss['policy']:.3f} v {loss['value']:.3f})  "
+                      f"buf {len(buffer):6d}  {games_per_sec:.1f} g/s{wr}")
+    finally:
+        shutdown_selfplay_workers()   # reap self-play worker processes
         if logger:
-            logger.log(it, flat_metrics(loss, len(buffer), games_per_sec,
-                                        sp["avg_game_len"], evals))
-        save_checkpoint(net, cfg, it, row, os.path.join(ckpt_dir, f"iter{it:04d}.pt"))
-
-        if verbose:
-            wr = (" | " + " ".join(f"d{d}:{w:.0%}" for d, w in evals["winrate"].items())
-                  + f" maxbeat:{evals['max_depth_beaten']}") if evals else ""
-            print(f"iter {it:3d}  loss {loss['total']:.3f} "
-                  f"(p {loss['policy']:.3f} v {loss['value']:.3f})  "
-                  f"buf {len(buffer):6d}  {games_per_sec:.1f} g/s{wr}")
-
-    if logger:
-        logger.close()
+            logger.close()
     return net, buffer, history
 
 
@@ -179,6 +181,8 @@ def main():
     ap.add_argument("--kaggle", action="store_true", help="modest GPU config (first Kaggle run)")
     ap.add_argument("--iterations", type=int, default=None)
     ap.add_argument("--eval-every", type=int, default=1)
+    ap.add_argument("--workers", type=int, default=None,
+                    help="self-play worker processes (default from config; set to #CPU cores)")
     ap.add_argument("--device", default=None, help="override device (cuda/cpu/auto)")
     ap.add_argument("--tensorboard", action="store_true",
                     help="also log to TensorBoard (needs a compatible protobuf)")
@@ -193,6 +197,8 @@ def main():
         cfg, name = Config(), "full"
     if args.iterations is not None:
         cfg.iterations = args.iterations
+    if args.workers is not None:
+        cfg.selfplay_workers = args.workers
     if args.device:
         cfg.device = args.device
     print(f"Training: {name} config, {cfg.iterations} iterations, "

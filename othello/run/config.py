@@ -29,6 +29,14 @@ class Config:
                                      # size. Batched inference feeds the GPU: a batch
                                      # of N boards costs ~the same as one. Capped at
                                      # games_per_iter; raise both to fill a bigger GPU.
+    selfplay_arrayops: bool = True   # self-play via batched engine + batched MCTS
+                                     # (engine/board_batched.py + az/mcts_batched.py): the whole
+                                     # game batch is searched with array ops, killing the
+                                     # per-game Python overhead that is ~87% of self-play
+                                     # time. The big throughput lever. False = coroutine pool.
+    selfplay_workers: int = 1        # self-play worker PROCESSES (used only when
+                                     # selfplay_arrayops is False): ~cores× via multiprocessing.
+                                     # Mostly superseded by array-ops; kept as a fallback.
 
     # Replay buffer
     buffer_size: int = 200_000
@@ -51,7 +59,11 @@ class Config:
 
     @classmethod
     def tiny(cls, **overrides):
-        """A tiny config that runs the whole loop in seconds on CPU (tests/smoke)."""
+        """A tiny config that runs the whole loop in seconds on CPU (tests/smoke).
+
+        Defaults to the coroutine pool path (`selfplay_arrayops=False`) because the
+        per-seed parity tests exercise it; the array-ops path has its own tests.
+        """
         base = cls(
             num_blocks=2, channels=16,
             sims_selfplay=16, sims_eval=24,
@@ -60,6 +72,7 @@ class Config:
             batch_size=32, steps_per_iter=10,
             eval_games=4, eval_depths=(1, 2),
             iterations=2,
+            selfplay_arrayops=False,
         )
         return replace(base, **overrides) if overrides else base
 
@@ -68,18 +81,18 @@ class Config:
         """First real GPU run: the 5x64 net, sized to climb the ladder within one
         free Kaggle session.
 
-        Batched self-play inference is now in place (games_per_iter games play
-        concurrently and share one net call per step, see az/selfplay.py), so the
-        GPU is fed instead of idling. `selfplay_concurrency == games_per_iter`
-        here means the whole iteration's games run as one wave (a ~96-board eval
-        batch). This should push max_depth_beaten past depth-2, toward depth-4;
-        raise games_per_iter / sims_selfplay for a longer, stronger run.
+        Self-play runs the array-ops path (`selfplay_arrayops=True`): the whole
+        96-game batch is searched with batched engine + batched MCTS, so the
+        per-game Python overhead that dominated (batching the network alone left it
+        CPU-bound at ~0.4 games/sec) is gone. This is the real throughput lever and
+        should push max_depth_beaten toward depth-4; raise games_per_iter /
+        sims_selfplay for a longer, stronger run.
         """
         base = cls(
             num_blocks=5, channels=64,          # the real network
             sims_selfplay=96, sims_eval=128,
             games_per_iter=96, temp_moves=12,
-            selfplay_concurrency=96,            # one wave: ~96 boards per net call
+            selfplay_arrayops=True,             # array-ops self-play: all 96 games in lockstep
             buffer_size=100_000,
             batch_size=256, steps_per_iter=250,
             eval_games=20, eval_depths=(1, 2, 4),
