@@ -24,20 +24,25 @@ import torch
 print("CUDA:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 ```
 
+First, check the session's core count (set `--workers` to it):
+```python
+import os; print("CPU cores:", os.cpu_count())
+```
+
 **Cell 3a — SMOKE RUN first** (2 iterations, eval skipped so you get the
 self-play speed number fast; weights thrown away on purpose). The `--kaggle`
-config runs the **array-ops** self-play path (batched engine + batched MCTS, all
-96 games searched in lockstep).
+config runs **array-ops** self-play (batched engine + MCTS, games searched in
+lockstep) spread across **4 worker processes** (`selfplay_workers=4`) so all CPU
+cores are used. Set `--workers` to the core count above if it isn't 4.
 ```python
-!python -u run/train_loop.py --kaggle --iterations 2 --eval-every 0 --out /kaggle/working/az_smoke
+!python -u run/train_loop.py --kaggle --workers 4 --iterations 2 --eval-every 0 --out /kaggle/working/az_smoke
 ```
-**What to look for:** the per-iteration `X.X g/s` (games/sec). The prior baseline
-was **~0.4 g/s** (unbatched, GPU idle). Array-ops moves the per-game MCTS Python
-overhead into batched array ops; the network runs on the GPU. On CPU this was
-~2.2× locally — the GPU number is what this smoke measures and is the honest
-unknown (the tree/engine math is still NumPy on the CPU even here, so it may be
-GPU-lifted or CPU-capped). Also run `!nvidia-smi` in a cell during self-play to
-see GPU utilization. **This g/s is the real verdict on the rewrite.**
+**What to look for:** the per-iteration `X.X g/s`. Baseline was **~0.4 g/s**;
+single-process array-ops already hit **2.1 g/s** on the T4, and spreading over 4
+cores added ~3× more locally, so expect **meaningfully higher** here. Compare
+with `--workers 1` to isolate the multi-core gain. (`nvidia-smi` will still show
+modest GPU use — the search math is NumPy on the CPU; the network is what's on
+the GPU. That's expected and is the known ceiling.)
 
 **Cell 3b — the real run** (5x64 net, ~30 iterations; finishes within a session
 and should climb the minimax ladder toward depth-4). Run this only after the

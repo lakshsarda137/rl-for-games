@@ -34,45 +34,44 @@ runnable artifact. See `README.md` for structure.
   Diagnosis (correcting the plan's premise): for the small 5×64 net the network is only
   ~13% of self-play time — the real wall is single-threaded pure-Python MCTS + NumPy
   engine. Batching was necessary but not sufficient.
-- **Multiprocess self-play ✅ (2026-07-19)** — a fallback throughput lever, now superseded
-  by array-ops for the real config. `cfg.selfplay_workers` spawn processes each run the
-  batched pool on a slice of the per-game seeds (`az/selfplay.py::_play_parallel`). Measured
-  **3.5× at 4 workers on a 10-core Mac**; byte-identical to the in-process pools
-  (`test_parallel_selfplay_matches_inprocess`). Used only when `selfplay_arrayops=False`.
-- **Array-ops self-play ✅ built + parity-verified (2026-07-19)** — the real rewrite (Phase 4
-  in spirit). `engine/board_batched.py` (batched Othello engine over `[B,8,8]`) +
-  `az/mcts_batched.py` (B trees in lockstep as flat arrays) + `az/selfplay.py::_play_batch`
-  (whole game batch searched with array ops). Kills the per-game Python overhead that was
-  ~87% of self-play. **Correctness is exhaustively verified vs the serial oracles** (engine
-  exact on 3633 positions, MCTS visit counts exact on 434, self-play move-for-move greedy;
-  `tests/test_batched.py`). `cfg.selfplay_arrayops=True` is the default; `kaggle` uses it.
-  **SPEED IS NOT YET SETTLED**: CPU-to-CPU it's ~2.2× the pool, but that's a floor, not the
-  verdict — the tree/engine math is NumPy on the CPU (only the net is on device), so the GPU
-  number is genuinely unknown until smoked. If the GPU smoke is CPU-capped, the last lever is
-  porting the tree ops to Torch-CUDA tensors (needs an NVIDIA GPU to build). **No long GPU
-  run; resume/load-to-play still unwired.**
+- **Array-ops self-play ✅ — the real throughput rewrite (2026-07-19).**
+  `engine/board_batched.py` (batched Othello engine over `[B,8,8]`, directional flood) +
+  `az/mcts_batched.py` (B MCTS trees in lockstep as flat `[B,max_nodes,65]` arrays, one batched
+  net call per sim step) + `az/selfplay.py::_play_batch` (whole game batch searched with array
+  ops). Kills the per-game Python overhead that was ~87% of self-play. **Correctness exhaustively
+  verified vs the serial oracles** (engine exact on 3633 positions, MCTS visit counts exact on 434,
+  self-play move-for-move greedy; `tests/test_batched.py`). Default (`cfg.selfplay_arrayops=True`).
+  **GPU smoke DONE: 2.1 games/sec on a Kaggle T4 (~5× the 0.4 baseline)** — good outcome, the GPU
+  lifted the network floor. BUT the tree/engine math is still **NumPy on the CPU** (only the net is
+  on-device), so the smoke showed one CPU core pegged and the GPU ~27% idle → now CPU-bound.
+- **Multiprocess self-play ✅ (2026-07-19)** — `cfg.selfplay_workers` spawn PROCESSES each play a
+  slice of the games on their own CPU core. Works over the coroutine pool (`_play_parallel`) AND,
+  via **Option B**, over array-ops (`_play_batch_parallel`/`_worker_batch`). Measured 3.5× (pool)
+  and **3.4× (array-ops) at 4 workers** on a 10-core Mac; byte-identical to the in-process split
+  (`test_parallel_selfplay_matches_inprocess`, `test_arrayops_parallel_matches_inprocess`). The
+  `kaggle` config = **array-ops + 4 workers**, so re-smoking `--kaggle` gives the combined g/s.
+  **No long GPU run yet; resume/load-to-play still unwired.**
 
 ## Next steps (in likely order)
-1. **Self-play throughput — built, GPU speed unsettled.** Three levers exist (see the
-   `az/selfplay.py` module docstring): batched inference (coroutine `_play_pool`),
-   multiprocess (`_play_parallel`, fallback), and **array-ops** (`_play_batch` + batched
-   engine/MCTS, the default). All are correctness-verified vs serial. **Immediate open
-   item: GPU-smoke the array-ops path** (`--kaggle`, `run/KAGGLE.md` cell 3a) to get the
-   real g/s — it's the honest unknown. If it's CPU-capped (tree/engine are NumPy on CPU),
-   port those to Torch-CUDA tensors (item 3; needs an NVIDIA GPU to build).
-2. **Checkpoint resume + load-to-play** (user asked to do this next, alongside a metrics
-   dashboard). `train_loop.train` starts fresh; add `--resume <ckpt>` (load `state_dict`)
-   so training continues across Kaggle sessions / weekly quota — without it, each new
-   session restarts from scratch, so a real multi-session run isn't safe yet. Also wire
-   "load checkpoint → az_player" into `play_cli`/`backend`. **Also wanted: a metrics
-   dashboard** that plots `data/metrics.jsonl` directly (the plan's pillar C; TensorBoard
-   is the intended-but-broken viewer here, so read the jsonl instead). Both were paused in
-   favour of the throughput fix.
-3. **Phase 4 — PyCUDA batched bitboard engine** (`engine/board_cuda.py`). This is the
-   BIG throughput lever the multiprocessing work only approximates: move the pure-Python
-   MCTS/engine grind (the actual ~87% bottleneck) onto the GPU. NOTE: needs an NVIDIA GPU
-   even to develop — **can't be built or verified on the user's Mac** (this is why
-   multiprocessing was done first). Verify parity vs the NumPy engine.
+1. **Self-play throughput — DONE for now (array-ops + multi-core).** 2.1 g/s single-process on a
+   T4, ~3.4× more across 4 cores → usable for a real run. **Next concrete action: re-smoke
+   `--kaggle`** (now array-ops + 4 workers, `run/KAGGLE.md` cell 3a) for the combined g/s. The
+   remaining bigger lever is item 3, optional.
+2. **Checkpoint resume + load-to-play + metrics dashboard** (user asked for all three; paused for
+   throughput, now the priority). `train_loop.train` starts fresh — add `--resume <ckpt>` (load
+   `state_dict`) so training continues across Kaggle sessions / weekly quota; **without it each new
+   session restarts from scratch, so a real multi-session run isn't safe yet.** Wire "load
+   checkpoint → az_player" into `play_cli`/`backend` so the trained bot can be watched/played. And
+   a **metrics dashboard** that plots `data/metrics.jsonl` directly (the plan's pillar C; TensorBoard
+   is the intended-but-broken viewer here — read the jsonl instead, don't fight tb).
+3. **(Optional, big) Port the batched engine + MCTS to Torch-CUDA tensors.** The array-ops search is
+   NumPy = CPU; moving it to Torch tensors on `cuda` is the only path to use the idle GPU (~27%) and
+   scale with batch size. **CORRECTION to earlier notes: this is device-agnostic Torch, buildable +
+   correctness-testable on the Mac (CPU tensors) — only its GPU *speed* needs Kaggle. NOT PyCUDA**
+   (PyCUDA custom kernels are the NVIDIA-only, resume-flex variant, a further step). The proven NumPy
+   `board_batched`/`mcts_batched` are the exact blueprint. **RISK:** eager-mode kernel-launch overhead
+   over ~1M tiny MCTS ops/iteration may negate it without op fusion (`torch.compile`/Triton) + large
+   batch — genuinely uncertain, only a GPU experiment settles it. Pursue only if chasing max speed.
 4. **Wire self-play records into the web UI** (watch/replay mode; records already exist
    in `data/game_records/`).
 5. **Elo + promotion gating** in evaluation (currently just win-rate ladder).
@@ -112,6 +111,29 @@ These will bite you if you change code without knowing them:
 - **Deep minimax is slow** (pure Python; d6 ≈ 9s/move). Interactive but not snappy;
   the batched engine is the eventual fix. Bot moves in the web backend run in a
   threadpool so they don't block the server.
+- **Self-play has THREE interchangeable paths, all parity-verified against the serial
+  `mcts.py` oracle** (`cfg` selects; see `az/selfplay.py` module docstring):
+  (1) coroutine pool `_play_pool` — per-game seeds, reproducible; the original
+  batched-inference path. (2) **array-ops `_play_batch` (DEFAULT)** — batched engine
+  (`engine/board_batched.py`) + batched MCTS (`az/mcts_batched.py`), all games searched in
+  lockstep as arrays; the fast one. (3) `cfg.selfplay_workers > 1` runs *either* across
+  spawn processes (one CPU core each). Keep `tests/test_batched.py` + the `test_az.py`
+  array-ops/parallel tests green — they pin every path to the serial oracle.
+- **GOLDEN RULE for self-play changes: "vectorised" ≠ "on the GPU".** `board_batched` /
+  `mcts_batched` are **NumPy = CPU**; only the network (`Evaluator`) runs on-device. Batching
+  over games removes per-game Python overhead but does NOT move the search to the GPU. Getting
+  the search onto the GPU is a separate, unbuilt Torch-CUDA port (next-steps item 3).
+- **`mcts.py` is a COROUTINE.** `run_root_gen` *yields* each leaf's `(board, player)` and gets
+  `(priors, value)` back via `.send()`; serial `run`/`run_root` drive it with the single-board
+  evaluator (so `az_player`/eval are unchanged), and the coroutine pool drives many at once. One
+  search implementation, three drivers.
+- **Batched inference is batch-size-independent by design.** `Evaluator` runs the net in eval
+  mode, so BatchNorm uses fixed running stats and a board's output doesn't depend on its batch
+  (matches single-board eval to ~1e-7 float rounding). This is *why* batched/array-ops play
+  matches serial; root Dirichlet noise keeps the tiny rounding from ever flipping a move.
+- **`run_tests.py` runs suites in PARALLEL** (ThreadPoolExecutor over subprocesses); FAST budget
+  is wall-clock (~8–12s), not the sum. `--serial` forces one-at-a-time. Prefer parallelism /
+  SLOW-tiering over shrinking a real test to fit the budget.
 
 ## Key user preferences (picked up from conversation)
 - **RL/DL background is beginner-level.** Explain concepts simply, with concrete
@@ -131,6 +153,21 @@ These will bite you if you change code without knowing them:
   resume weekly on one account (quota resets), and Colab as a separate free provider.
 - Works through the plan **phase by phase** and likes knowing what phase they're in
   and what's next.
+- **Measure honestly; never dress a partial result as a verdict.** This user is sharp and
+  WILL catch over-promising and inconsistency (they did, repeatedly and correctly). Rules that
+  came out of it: don't present a CPU-relative speedup as the GPU verdict; **state what a
+  measurement can and cannot show BEFORE running it**; give ranges with caveats, not hype. The
+  real throughput arc was batching ~1×, multiprocess 3.5×, array-ops CPU ~2.2× / GPU ~5× — all
+  well below the "10–50×" floated early. Under-promise.
+- **"DO NOT CODE" / "stop" means stop instantly and REVERT.** When the user halts you, stop
+  mid-task and `git`-revert anything added since their last instruction (this happened — a
+  half-built Torch port was deleted on request). Don't argue or "just finish".
+- **Wants max optimisation but is pragmatic about risk.** Asked to "optimise to the fullest,"
+  then, once effort/risk/payoff were laid out in *very simple* terms, chose the cheap safe CPU-core
+  bump over the risky GPU-tensor port. Present options plainly (what it means, effort, risk,
+  payoff) and let them choose rather than unilaterally chasing the flashy path.
+- **Compute is real to them** — a full `--kaggle` run is now feasible (~45 min at current speed).
+  Don't burn Kaggle sessions on unvalidated code; correctness-test on the Mac first, then smoke.
 
 ## Gotchas for running things
 - Modules use `sys.path` inserts to import siblings (engine/opponents/az), not a

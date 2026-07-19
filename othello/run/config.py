@@ -34,9 +34,10 @@ class Config:
                                      # game batch is searched with array ops, killing the
                                      # per-game Python overhead that is ~87% of self-play
                                      # time. The big throughput lever. False = coroutine pool.
-    selfplay_workers: int = 1        # self-play worker PROCESSES (used only when
-                                     # selfplay_arrayops is False): ~cores× via multiprocessing.
-                                     # Mostly superseded by array-ops; kept as a fallback.
+    selfplay_workers: int = 1        # self-play worker PROCESSES. >1 spreads self-play over
+                                     # that many CPU cores (~cores× on top, bounded by core
+                                     # count). Composes with array-ops (each worker vectorises
+                                     # its own sub-batch). 1 = single process. Set to ~#CPU cores.
 
     # Replay buffer
     buffer_size: int = 200_000
@@ -92,7 +93,8 @@ class Config:
             num_blocks=5, channels=64,          # the real network
             sims_selfplay=96, sims_eval=128,
             games_per_iter=96, temp_moves=12,
-            selfplay_arrayops=True,             # array-ops self-play: all 96 games in lockstep
+            selfplay_arrayops=True,             # array-ops self-play (batched engine + MCTS)
+            selfplay_workers=4,                 # ...spread over ~4 Kaggle vCPUs (--workers to tune)
             buffer_size=100_000,
             batch_size=256, steps_per_iter=250,
             eval_games=20, eval_depths=(1, 2, 4),

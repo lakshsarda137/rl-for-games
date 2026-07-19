@@ -26,6 +26,7 @@ from replay_buffer import ReplayBuffer
 from selfplay import (
     _chunk,
     _play_batch,
+    _play_batch_parallel,
     _play_parallel,
     _play_pool,
     generate_games,
@@ -238,6 +239,39 @@ def test_parallel_selfplay_matches_inprocess():
         shutdown_selfplay_workers()            # reap the spawned processes
 
 
+def test_arrayops_parallel_matches_inprocess():
+    """Array-ops across worker PROCESSES (the 'use every core' path) produces
+    exactly the games the in-process array-ops would for the same per-worker seeds
+    — validates the multi-core plumbing (weight transfer, game-count chunking,
+    result collection). With the single-process greedy==serial check, this covers
+    array-ops both on one core and across many."""
+    from types import SimpleNamespace
+    net = _tiny_net()
+    ev = Evaluator(net)
+    cfg = SimpleNamespace(c_puct=1.5, dirichlet_alpha=0.3, dirichlet_eps=0.25,
+                          sims_selfplay=6, temp_moves=3, augment=False,
+                          selfplay_arrayops=True, selfplay_workers=2)
+    num_games, workers = 5, 2
+
+    rng = np.random.default_rng(0)             # replicate the parallel seed derivation
+    sizes = [len(c) for c in _chunk(list(range(num_games)), workers)]
+    seeds = rng.integers(1, np.iinfo(np.int64).max, size=len(sizes))
+    ref = []
+    for w in range(len(sizes)):
+        ref += _play_batch(ev, cfg, np.random.default_rng(int(seeds[w])), sizes[w])
+    try:
+        par = _play_batch_parallel(ev, cfg, np.random.default_rng(0), num_games, workers)
+        same = len(par) == len(ref) and all(
+            len(a[0]) == len(b[0]) and all(
+                np.array_equal(x[0], y[0]) and np.array_equal(x[1], y[1])
+                and np.array_equal(x[2], y[2]) and x[3] == y[3]
+                for x, y in zip(a[0], b[0]))
+            for a, b in zip(par, ref))
+        check("array-ops workers == in-process chunks byte-for-byte", same)
+    finally:
+        shutdown_selfplay_workers()
+
+
 # --- whole loop (slow) -------------------------------------------------------
 def test_train_loop_end_to_end():
     from train_loop import train
@@ -258,7 +292,8 @@ FAST = [test_network_and_evaluator, test_mcts_basic, test_replay_buffer,
         test_selfplay_produces_valid_examples, test_evaluate_batch_matches_single,
         test_batched_selfplay_matches_serial, test_arrayops_selfplay_matches_serial_greedy,
         test_overfit_tiny]
-SLOW = [test_parallel_selfplay_matches_inprocess, test_train_loop_end_to_end]
+SLOW = [test_parallel_selfplay_matches_inprocess, test_arrayops_parallel_matches_inprocess,
+        test_train_loop_end_to_end]
 
 if __name__ == "__main__":
     run(FAST, SLOW, "az")

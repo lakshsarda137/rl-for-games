@@ -12,8 +12,8 @@ Agent-facing status and non-obvious decisions live in [`CLAUDE.md`](CLAUDE.md).
 ## Quick start
 
 ```bash
-# Run the tests (fast tier, ~13s)
-python run_tests.py                 # add --full for the heavy tier (~55s)
+# Run the tests (fast tier, ~10s wall — suites run in parallel)
+python run_tests.py                 # add --full for the heavy tier (~35s wall); --serial to serialize
 
 # Play in the terminal (you are Black, vs depth-3 minimax)
 python run/play_cli.py --black human --white minimax:3
@@ -33,7 +33,8 @@ Training on a free Kaggle GPU: see [`run/KAGGLE.md`](run/KAGGLE.md).
 ```
 othello/
 ├── engine/                 # the game — the correctness oracle for everything else
-│   ├── board_numpy.py      #   NumPy Othello rules (moves, flips, passing, terminal, scoring)
+│   ├── board_numpy.py      #   NumPy Othello rules (moves, flips, passing, terminal, scoring) — the oracle
+│   ├── board_batched.py    #   same rules vectorised over B boards [B,8,8] (for fast self-play)
 │   ├── encode.py           #   board <-> NN input planes; the 65-action space; PERSPECTIVE convention
 │   └── symmetry.py          #   8-fold dihedral transforms (board + 65-policy, jointly)
 ├── opponents/              # the yardsticks the agent is measured against
@@ -43,9 +44,10 @@ othello/
 │   ├── edax.py             #   wrapper driving the external Edax engine as a subprocess
 │   └── EDAX_SETUP.md       #   how to build/install Edax (it lives in gitignored third_party/)
 ├── az/                     # the AlphaZero learner
-│   ├── network.py          #   policy+value ResNet + Evaluator (net -> priors, value)
-│   ├── mcts.py             #   PUCT search, Dirichlet root noise, visit_policy
-│   ├── selfplay.py         #   MCTS-driven game generation -> training examples + spectator records
+│   ├── network.py          #   policy+value ResNet + Evaluator (net -> priors, value; batched)
+│   ├── mcts.py             #   PUCT search (a coroutine), Dirichlet root noise, visit_policy
+│   ├── mcts_batched.py     #   B MCTS trees searched in lockstep as flat arrays (fast self-play)
+│   ├── selfplay.py         #   game generation -> training examples + records (array-ops / pool / multi-core)
 │   ├── replay_buffer.py    #   rolling FIFO of (planes, pi, mask, z)
 │   ├── train.py            #   loss = value MSE + masked policy cross-entropy + L2
 │   └── evaluate.py         #   ladder eval vs minimax; max_depth_beaten
@@ -60,7 +62,7 @@ othello/
 ├── tests/                  # tiered test suites (fast default, --full heavy)
 │   ├── harness.py          #   check() + the fast/full runner
 │   └── test_*.py           #   engine parity/perft, encode, symmetry, minimax, edax, az pipeline
-├── run_tests.py            # runs all suites; warns if the fast tier exceeds 20s
+├── run_tests.py            # runs all suites in parallel; warns if the fast tier exceeds 20s wall
 ├── data/                   # (gitignored) checkpoints, game_records, metrics.jsonl
 └── third_party/edax/       # (gitignored) the built Edax binary + eval weights
 ```
@@ -68,8 +70,8 @@ othello/
 ## How the pieces fit
 
 1. **Engine** defines the rules and is the single source of truth. Everything
-   else calls it; the NumPy version is the reference (a batched CUDA version is a
-   future optimization).
+   else calls it; `board_numpy.py` is the reference oracle, `board_batched.py` is a
+   vectorised copy for fast self-play (a Torch/CUDA version is a future optimization).
 2. **Encoding** turns a board into what the network sees — always from the
    *side-to-move's* perspective (see `encode.py`, this is the key convention).
 3. **Network** maps a position to (move priors, value). **MCTS** uses it to look
@@ -89,8 +91,8 @@ othello/
 
 ## Testing
 
-Two tiers (see `tests/harness.py`):
-- **FAST** (default, ~13s) — runs after every change: correctness, encoding,
-  symmetry, overfit-tiny, a light strength match.
-- **FULL** (`--full`, ~55s) — adds deep perft, strength matches, the end-to-end
-  training loop. Run when a change warrants the heavy checks.
+Two tiers (see `tests/harness.py`), and suites run in parallel (`run_tests.py`):
+- **FAST** (default, ~10s wall) — runs after every change: correctness, encoding,
+  symmetry, batched-engine/MCTS parity, overfit-tiny, a light strength match.
+- **FULL** (`--full`, ~35s wall) — adds deep perft, strength matches, multi-process
+  self-play, the end-to-end training loop. Run when a change warrants the heavy checks.

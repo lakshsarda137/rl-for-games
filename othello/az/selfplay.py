@@ -298,6 +298,26 @@ def _worker_play(payload):
                       make_records=make_records)
 
 
+def _worker_batch(payload):
+    """Runs in a spawned worker: rebuild the net and play a slice of games via the
+    ARRAY-OPS path (`_play_batch`). This is how the array-ops self-play uses more
+    than one CPU core — each worker vectorises its own sub-batch on its own core."""
+    from types import SimpleNamespace
+
+    import torch
+
+    from network import Evaluator, OthelloNet
+
+    arch, state, cfg_dict, n_games, seed, iteration, make_records, device = payload
+    torch.set_num_threads(1)
+    net = OthelloNet(*arch)
+    net.load_state_dict(state)
+    evaluator = Evaluator(net, device)
+    cfg = SimpleNamespace(**cfg_dict)
+    return _play_batch(evaluator, cfg, np.random.default_rng(int(seed)), n_games,
+                       iteration=iteration, make_records=make_records)
+
+
 def _play_parallel(evaluator, cfg, seeds, workers, iteration=0, make_records=False):
     """Play the games in `seeds` across `workers` processes; return per-game
     results in seed order (identical set of games to the single-process path)."""
@@ -405,23 +425,48 @@ def _play_batch(evaluator, cfg, rng, num_games, iteration=0, make_records=False,
     return per_game
 
 
+def _play_batch_parallel(evaluator, cfg, rng, num_games, workers,
+                         iteration=0, make_records=False):
+    """Run the array-ops path across `workers` processes — each vectorises its own
+    sub-batch of games on its own CPU core. This is the "use every core" lever
+    on top of array-ops (array-ops already uses one core fully). Returns per-game
+    results in worker order."""
+    net = evaluator.net
+    payload_base = ((net.num_blocks, net.channels),
+                    {k: v.detach().cpu() for k, v in net.state_dict().items()},
+                    dict(vars(cfg)))
+    sizes = [len(c) for c in _chunk(list(range(num_games)), workers)]
+    seeds = rng.integers(1, np.iinfo(np.int64).max, size=len(sizes))
+    payloads = [(*payload_base, sizes[w], int(seeds[w]), iteration, make_records,
+                 evaluator.device) for w in range(len(sizes))]
+    executor = _get_executor(len(payloads))
+    results = executor.map(_worker_batch, payloads)
+    return [game for worker_result in results for game in worker_result]
+
+
 def generate_games(evaluator, cfg, rng, num_games, iteration=0, make_records=False):
     """Play `num_games` self-play games; return (examples, records, stats).
 
     Path selection (see the module docstring):
-      * `cfg.selfplay_arrayops` (default) — the whole batch of games is searched
-        with array ops (`_play_batch`): batched engine + batched MCTS, the big win.
-      * else `cfg.selfplay_workers > 1` — split games across worker PROCESSES
-        (`_play_parallel`); or the single-process coroutine pool (`_play_pool`).
-    The array-ops path couples games through one `rng`; the pool paths seed each
-    game independently (reproducible per seed), which the parity tests rely on.
+      * `cfg.selfplay_arrayops` (default) — the whole batch is searched with array
+        ops (`_play_batch`). With `cfg.selfplay_workers > 1` the games are split
+        across worker PROCESSES (`_play_batch_parallel`), each vectorising its own
+        sub-batch on its own CPU core — the "use every core" bump on top.
+      * else — the coroutine pool (`_play_pool`) or its multiprocess variant.
+    The array-ops path couples games through `rng`; the pool paths seed each game
+    independently (reproducible per seed), which the parity tests rely on.
     """
+    workers = int(getattr(cfg, "selfplay_workers", 1) or 1)
     if getattr(cfg, "selfplay_arrayops", False) and num_games > 1:
-        per_game = _play_batch(evaluator, cfg, rng, num_games, iteration=iteration,
-                               make_records=make_records)
+        if workers > 1:
+            per_game = _play_batch_parallel(evaluator, cfg, rng, num_games,
+                                            min(workers, num_games),
+                                            iteration=iteration, make_records=make_records)
+        else:
+            per_game = _play_batch(evaluator, cfg, rng, num_games, iteration=iteration,
+                                   make_records=make_records)
     else:
         seeds = [int(s) for s in rng.integers(1, np.iinfo(np.int64).max, size=num_games)]
-        workers = int(getattr(cfg, "selfplay_workers", 1) or 1)
         if workers > 1 and num_games > 1:
             per_game = _play_parallel(evaluator, cfg, seeds, min(workers, num_games),
                                       iteration=iteration, make_records=make_records)
