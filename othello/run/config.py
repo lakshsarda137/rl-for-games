@@ -58,3 +58,25 @@ class Config:
             iterations=2,
         )
         return replace(base, **overrides) if overrides else base
+
+    @classmethod
+    def kaggle(cls, **overrides):
+        """Modest first GPU run: the real 5x64 net, sized to climb the ladder and
+        finish comfortably within one free Kaggle session.
+
+        Deliberately below the full defaults on sims/games because self-play
+        currently evaluates one position at a time (unbatched) — the big scale-up
+        comes with batched inference. This run validates GPU training end to end
+        and should push max_depth_beaten past depth-2, toward depth-4.
+        """
+        base = cls(
+            num_blocks=5, channels=64,          # the real network
+            sims_selfplay=64, sims_eval=96,
+            games_per_iter=48, temp_moves=12,
+            buffer_size=100_000,
+            batch_size=256, steps_per_iter=250,
+            eval_games=20, eval_depths=(1, 2, 4),
+            iterations=30,
+            device="cuda",
+        )
+        return replace(base, **overrides) if overrides else base

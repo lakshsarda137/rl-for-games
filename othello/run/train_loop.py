@@ -34,6 +34,18 @@ from train import make_optimizer, train_steps
 DATA_DIR = os.path.normpath(os.path.join(_HERE, "..", "data"))
 
 
+def resolve_device(requested):
+    """Turn 'cuda'/'auto'/'cpu' into a device that actually exists here."""
+    if requested in ("cuda", "auto") and torch.cuda.is_available():
+        return "cuda"
+    if requested == "cuda":
+        print("[device] CUDA not available -> falling back to CPU")
+        return "cpu"
+    if requested == "auto":
+        return "cpu"
+    return requested
+
+
 def flat_metrics(loss, buffer_len, games_per_sec, avg_len, evals):
     """One flat {name: number} dict per iteration, for jsonl + TensorBoard."""
     m = {
@@ -103,6 +115,7 @@ def _write_records(records, out_dir, iteration):
 
 def train(cfg, out_dir=DATA_DIR, eval_every=1, log=True, use_tb=False, verbose=True):
     """Run the full loop for cfg.iterations; return (net, buffer, history)."""
+    cfg.device = resolve_device(cfg.device)
     torch.manual_seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
     ckpt_dir = os.path.join(out_dir, "checkpoints")
@@ -163,18 +176,27 @@ def train(cfg, out_dir=DATA_DIR, eval_every=1, log=True, use_tb=False, verbose=T
 def main():
     ap = argparse.ArgumentParser(description="AlphaZero Othello training loop.")
     ap.add_argument("--tiny", action="store_true", help="tiny CPU config (smoke run)")
+    ap.add_argument("--kaggle", action="store_true", help="modest GPU config (first Kaggle run)")
     ap.add_argument("--iterations", type=int, default=None)
     ap.add_argument("--eval-every", type=int, default=1)
+    ap.add_argument("--device", default=None, help="override device (cuda/cpu/auto)")
     ap.add_argument("--tensorboard", action="store_true",
                     help="also log to TensorBoard (needs a compatible protobuf)")
     ap.add_argument("--out", default=DATA_DIR)
     args = ap.parse_args()
 
-    cfg = Config.tiny() if args.tiny else Config()
+    if args.kaggle:
+        cfg, name = Config.kaggle(), "kaggle"
+    elif args.tiny:
+        cfg, name = Config.tiny(), "tiny"
+    else:
+        cfg, name = Config(), "full"
     if args.iterations is not None:
         cfg.iterations = args.iterations
-    print(f"Training: {'tiny' if args.tiny else 'full'} config, "
-          f"{cfg.iterations} iterations, device={cfg.device}")
+    if args.device:
+        cfg.device = args.device
+    print(f"Training: {name} config, {cfg.iterations} iterations, "
+          f"device={resolve_device(cfg.device)}")
     train(cfg, out_dir=args.out, eval_every=args.eval_every, use_tb=args.tensorboard)
 
 
