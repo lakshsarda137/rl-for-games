@@ -66,12 +66,23 @@ runnable artifact. See `README.md` for structure.
    is the intended-but-broken viewer here — read the jsonl instead, don't fight tb).
 3. **(Optional, big) Port the batched engine + MCTS to Torch-CUDA tensors.** The array-ops search is
    NumPy = CPU; moving it to Torch tensors on `cuda` is the only path to use the idle GPU (~27%) and
-   scale with batch size. **CORRECTION to earlier notes: this is device-agnostic Torch, buildable +
-   correctness-testable on the Mac (CPU tensors) — only its GPU *speed* needs Kaggle. NOT PyCUDA**
-   (PyCUDA custom kernels are the NVIDIA-only, resume-flex variant, a further step). The proven NumPy
-   `board_batched`/`mcts_batched` are the exact blueprint. **RISK:** eager-mode kernel-launch overhead
-   over ~1M tiny MCTS ops/iteration may negate it without op fusion (`torch.compile`/Triton) + large
-   batch — genuinely uncertain, only a GPU experiment settles it. Pursue only if chasing max speed.
+   scale with batch size. **What is/isn't the bottleneck (know this):** the *game play* (self-play) is
+   the bottleneck, and within it the **tree-search + game-rules** (`board_batched`/`mcts_batched`, NumPy)
+   is what's stuck on the CPU. The *network* work — both position eval during search AND the weight
+   updates in `train_steps` — is already on the GPU and is NOT the problem. So this port is specifically
+   about moving the search/rules to the GPU.
+   **The port is welded to running FAR more games at once** (hundreds–thousands, not 96): the per-op
+   launch overhead is fixed *per step* regardless of batch (step count = sims×moves×depth, independent of
+   games), so you want each step doing many more games. Bonus: on the GPU big batches are ~free, and more
+   games/iter is also a training-data plus (GPU mem is wide open, ~177MB/15GB). But **big batch is
+   NECESSARY, maybe not SUFFICIENT** — the ~1M tiny op-launches/round set a time floor that could dominate
+   even at large batch; only op fusion (`torch.compile`/Triton, hard with MCTS's dynamic control flow) or
+   a GPU experiment settles it. On the CURRENT CPU path, raising `games_per_iter` just costs proportionally
+   more time — big batches only pay off once the search is on the GPU.
+   **CORRECTION to earlier notes: this is device-agnostic Torch, buildable + correctness-testable on the
+   Mac (CPU tensors) — only its GPU *speed* needs Kaggle. NOT PyCUDA** (PyCUDA custom kernels are the
+   NVIDIA-only, resume-flex variant, a further step). The proven NumPy `board_batched`/`mcts_batched` are
+   the exact blueprint. Pursue only if chasing max speed.
 4. **Wire self-play records into the web UI** (watch/replay mode; records already exist
    in `data/game_records/`).
 5. **Elo + promotion gating** in evaluation (currently just win-rate ladder).
