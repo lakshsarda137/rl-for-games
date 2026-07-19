@@ -24,17 +24,20 @@ import torch
 print("CUDA:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 ```
 
-**Cell 3a — SMOKE RUN first** (validate batched self-play on the GPU: just 2
-iterations, evaluation skipped so you get the self-play speed number fast). This
-throws away its weights on purpose — the point is to confirm the batched
-architecture feeds the GPU before committing a real run.
+**Cell 3a — SMOKE RUN first** (2 iterations, eval skipped so you get the
+self-play speed number fast; weights thrown away on purpose). The `--kaggle`
+config runs the **array-ops** self-play path (batched engine + batched MCTS, all
+96 games searched in lockstep).
 ```python
-!python run/train_loop.py --kaggle --iterations 2 --eval-every 0 --out /kaggle/working/az_smoke
+!python -u run/train_loop.py --kaggle --iterations 2 --eval-every 0 --out /kaggle/working/az_smoke
 ```
-**What to look for:** the per-iteration `X.X g/s` (games/sec). The pre-batching
-baseline was ~0.5 g/s with the GPU idle at ~20%. Batched inference should be
-several times higher, and `nvidia-smi` (run `!nvidia-smi` in a cell) should show
-much higher GPU utilization during self-play. That jump *is* the validation.
+**What to look for:** the per-iteration `X.X g/s` (games/sec). The prior baseline
+was **~0.4 g/s** (unbatched, GPU idle). Array-ops moves the per-game MCTS Python
+overhead into batched array ops; the network runs on the GPU. On CPU this was
+~2.2× locally — the GPU number is what this smoke measures and is the honest
+unknown (the tree/engine math is still NumPy on the CPU even here, so it may be
+GPU-lifted or CPU-capped). Also run `!nvidia-smi` in a cell during self-play to
+see GPU utilization. **This g/s is the real verdict on the rewrite.**
 
 **Cell 3b — the real run** (5x64 net, ~30 iterations; finishes within a session
 and should climb the minimax ladder toward depth-4). Run this only after the
@@ -68,8 +71,9 @@ multi-session run.)
   your image's protobuf is compatible.
 - **Long runs:** enable **Save & Run All (Commit)** for background execution so
   training survives you closing the tab (Kaggle allows ~9–12h sessions).
-- **Scaling up:** batched self-play inference is now in place — self-play plays
-  `selfplay_concurrency` games at once and evaluates all their pending MCTS leaves
-  in one GPU call per step (`--kaggle` uses 96 games / 96 sims as one wave). To
-  push the GPU harder, raise `games_per_iter` **and** `selfplay_concurrency`
-  together (bigger eval batch) via a config edit; watch `selfplay_games_per_sec`.
+- **Scaling up:** two throughput levers are in place — batched inference (many
+  games share one net call) and **multiprocess self-play** (`--workers N` splits
+  games over N processes). The workers are the real win here, because self-play is
+  CPU-bound single-threaded Python; set `--workers` to the session's vCPU count.
+  Watch `selfplay_games_per_sec`. The next, bigger lever (moving the MCTS/engine
+  onto the GPU via a CUDA kernel) needs an NVIDIA GPU to build — it's future work.

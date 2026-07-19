@@ -12,21 +12,37 @@ self-play from collapsing onto one line.
 
 Optionally also emits a human-readable game record (§10) for the spectator.
 
-BATCHED INFERENCE (the throughput fix). Naively, self-play evaluates ONE board
-per network call, so on a GPU the CPU pins at 100% while the GPU idles — a GPU
-evaluates 256 boards ≈ as fast as 1. Fix: `generate_games` plays many games
-CONCURRENTLY and evaluates all their pending MCTS leaves in ONE batched network
-call per step (`_play_pool`). Each game is a coroutine (`play_game_gen`) that
-yields the leaf it needs evaluated; the pool driver gathers one request per
-active game, runs a single `evaluator.evaluate_batch`, and sends each result
-back. Within a game the search stays strictly sequential, and every game is
-seeded independently, so play matches the serial path regardless of batch size
-(differences are float32 rounding in the batched matmul, ~1e-7, below the level
-that changes any move) — batching changes speed, not strength.
+THROUGHPUT has two independent levers, because self-play cost splits in two:
+
+  1. BATCHED INFERENCE (`_play_pool`). `generate_games` plays many games
+     CONCURRENTLY and evaluates all their pending MCTS leaves in ONE batched
+     network call per step. Each game is a coroutine (`play_game_gen`) that yields
+     the leaf it needs evaluated; the pool driver gathers one request per active
+     game, runs a single `evaluator.evaluate_batch`, and sends each result back.
+     Play matches the serial path regardless of batch size (differences are
+     float32 matmul rounding, ~1e-7, below the level that changes a move). This
+     collapses ~N net calls into ~1 — but for the small 5x64 Othello net the
+     network is only ~13% of self-play time, so this alone barely moves g/s.
+
+  2. MULTIPROCESS SELF-PLAY (`_play_parallel`). The other ~87% is pure-Python
+     MCTS + NumPy engine (select/backup, apply_move, legal_moves, encode), and it
+     runs single-threaded — one CPU core, which is the real wall (measured: a GPU
+     run sat CPU-pinned at ~0.4 games/sec with the GPU near-idle). Fix: split the
+     per-game seeds across `cfg.selfplay_workers` worker PROCESSES; each runs its
+     own batched `_play_pool` on its slice with the net loaded from a shared
+     state_dict. This uses all cores (and, on a GPU, keeps it busier with several
+     processes issuing batches). Because every game is fully determined by its own
+     seed, the set of games produced is independent of how they're partitioned.
+
+Use both together: workers give the ~cores× speedup, batching keeps each worker's
+GPU round-trips cheap. `selfplay_workers=1` keeps the plain single-process path.
 """
 
+import atexit
+import multiprocessing as mp
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
@@ -44,7 +60,10 @@ from board_numpy import (
 from encode import encode, legal_action_mask
 from symmetry import NUM_SYMMETRIES, transform_board, transform_policy
 
+import board_batched as bb
+
 from mcts import MCTS, root_value, visit_policy
+from mcts_batched import make_net_evaluator, run_batched
 
 
 def _transform_planes(planes, i):
@@ -215,17 +234,200 @@ def _play_pool(evaluator, cfg, seeds, iteration=0, make_records=False):
     return results
 
 
-def generate_games(evaluator, cfg, rng, num_games, iteration=0, make_records=False):
-    """Play `num_games` self-play games with batched inference; return
-    (examples, records, stats).
+# --- multiprocess self-play (the CPU-bound-throughput lever) -----------------
 
-    Games run concurrently and share one batched network call per step (see
-    `_play_pool`) — the fix for GPU starvation. Each game gets its own seed
-    drawn from `rng`, so play is reproducible and independent of batch size.
+def _chunk(items, n):
+    """Split `items` into `n` contiguous, near-equal slices (order preserved)."""
+    n = max(1, min(n, len(items) or 1))
+    k, r = divmod(len(items), n)
+    out, i = [], 0
+    for j in range(n):
+        size = k + (1 if j < r else 0)
+        out.append(items[i:i + size])
+        i += size
+    return [c for c in out if c]
+
+
+_EXECUTOR = None
+_EXECUTOR_WORKERS = None
+
+
+def _get_executor(workers):
+    """A persistent spawn-based process pool, reused across iterations so torch /
+    CUDA init happens once per worker, not once per call."""
+    global _EXECUTOR, _EXECUTOR_WORKERS
+    if _EXECUTOR is None or _EXECUTOR_WORKERS != workers:
+        if _EXECUTOR is not None:
+            _EXECUTOR.shutdown()
+        # spawn (not fork): required for CUDA in child processes, and the default
+        # on macOS anyway — so the local CPU test exercises the same mechanism.
+        _EXECUTOR = ProcessPoolExecutor(max_workers=workers,
+                                        mp_context=mp.get_context("spawn"))
+        _EXECUTOR_WORKERS = workers
+    return _EXECUTOR
+
+
+def shutdown_selfplay_workers():
+    """Tear down the worker pool (train loop calls this; also runs at exit)."""
+    global _EXECUTOR, _EXECUTOR_WORKERS
+    if _EXECUTOR is not None:
+        _EXECUTOR.shutdown()
+        _EXECUTOR, _EXECUTOR_WORKERS = None, None
+
+
+atexit.register(shutdown_selfplay_workers)
+
+
+def _worker_play(payload):
+    """Runs in a spawned worker: rebuild the net from a shared state_dict and play
+    a slice of games via the batched pool. Returns per-game (examples, record,
+    plies), exactly as `_play_pool` would in-process."""
+    from types import SimpleNamespace
+
+    import torch
+
+    from network import Evaluator, OthelloNet  # imported here: only the workers need it
+
+    arch, state, cfg_dict, seeds, iteration, make_records, device = payload
+    torch.set_num_threads(1)   # one core per worker — avoid intraop-thread thrash
+    net = OthelloNet(*arch)
+    net.load_state_dict(state)
+    evaluator = Evaluator(net, device)
+    cfg = SimpleNamespace(**cfg_dict)
+    return _play_pool(evaluator, cfg, seeds, iteration=iteration,
+                      make_records=make_records)
+
+
+def _play_parallel(evaluator, cfg, seeds, workers, iteration=0, make_records=False):
+    """Play the games in `seeds` across `workers` processes; return per-game
+    results in seed order (identical set of games to the single-process path)."""
+    net = evaluator.net
+    payload_base = ((net.num_blocks, net.channels),
+                    {k: v.detach().cpu() for k, v in net.state_dict().items()},
+                    dict(vars(cfg)))
+    chunks = _chunk(seeds, workers)
+    payloads = [(*payload_base, chunk, iteration, make_records, evaluator.device)
+                for chunk in chunks]
+    executor = _get_executor(len(payloads))
+    results = executor.map(_worker_play, payloads)
+    return [game for worker_result in results for game in worker_result]
+
+
+# --- array-ops self-play (the big throughput lever) --------------------------
+
+def _visit_policies(counts, temperature):
+    """Vectorised `visit_policy` over a batch: `[k,65]` counts -> `[k,65]` π."""
+    counts = counts.astype(np.float64)
+    if temperature <= 1e-8:
+        out = np.zeros_like(counts)
+        out[np.arange(len(counts)), counts.argmax(1)] = 1.0
+        return out.astype(np.float32)
+    scaled = counts ** (1.0 / temperature)
+    return (scaled / scaled.sum(1, keepdims=True)).astype(np.float32)
+
+
+def _play_batch(evaluator, cfg, rng, num_games, iteration=0, make_records=False,
+                add_noise=True):
+    """Play `num_games` self-play games as ONE batch, in lockstep, with the whole
+    search vectorised over games (batched engine + batched MCTS). Returns per-game
+    (examples, record, plies). This is the array-ops path: the per-game Python cost
+    that dominates the coroutine path is gone — every ply advances all live games
+    with one batched MCTS and one batched engine step.
+
+    `rng` drives Dirichlet noise + move sampling for the whole batch, so games are
+    coupled through it (unlike the per-seed pool path) — fine for training, and
+    with `add_noise=False` + greedy play it's deterministic and matches serial
+    greedy self-play move-for-move (`tests/test_batched.py`)."""
+    evaluate = make_net_evaluator(evaluator.net, evaluator.device)
+    boards = bb.initial_boards(num_games)
+    players = np.full(num_games, BLACK, np.int8)
+    alive = ~bb.is_terminal(boards)
+
+    history = [[] for _ in range(num_games)]     # (planes, pi, mask, mover) per game
+    rec_moves = [[] for _ in range(num_games)] if make_records else None
+    ply = 0
+
+    while alive.any():
+        idx = np.where(alive)[0]
+        sub_boards, sub_players = boards[idx], players[idx].copy()
+        counts, root_vals = run_batched(sub_boards, sub_players, cfg.sims_selfplay,
+                                        evaluate, cfg, rng=rng, add_noise=add_noise)
+        temperature = 1.0 if ply < cfg.temp_moves else 0.0
+        pis = _visit_policies(counts, temperature)
+        planes = bb.encode_batch(sub_boards, sub_players)
+        masks = bb.legal_action_masks(sub_boards, sub_players) > 0
+
+        if temperature <= 1e-8:
+            moves = pis.argmax(1)
+        else:
+            u = rng.random(len(pis))
+            moves = (np.cumsum(pis, axis=1) < u[:, None]).sum(1)
+        moves = moves.astype(np.int64)
+
+        for j, g in enumerate(idx):
+            history[g].append((planes[j], pis[j], masks[j], int(sub_players[j])))
+            if make_records:
+                top = sorted(((int(a), float(pis[j, a])) for a in np.nonzero(pis[j])[0]),
+                             key=lambda x: -x[1])[:3]
+                rec_moves[g].append({
+                    "n": ply + 1, "player": "B" if sub_players[j] == BLACK else "W",
+                    "move": int(moves[j]), "mcts_value": round(float(root_vals[j]), 3),
+                    "top_policy": [[a, round(p, 3)] for a, p in top]})
+
+        boards[idx] = bb.apply_moves(sub_boards, sub_players, moves)
+        players[idx] = -players[idx]
+        ply += 1
+        newly_terminal = bb.is_terminal(boards[idx])
+        if make_records:
+            for j, g in enumerate(idx):
+                rec_moves[g][-1]["board"] = [int(x) for x in boards[g].reshape(-1)]
+        alive[idx[newly_terminal]] = False
+
+    results = bb.winner(boards)
+    black_disc, white_disc = bb.count_discs(boards)
+    per_game = []
+    for g in range(num_games):
+        result = int(results[g])
+        examples = []
+        for planes_g, pi_g, mask_g, mover in history[g]:
+            z = 0.0 if result == 0 else (1.0 if result == mover else -1.0)
+            if cfg.augment:
+                examples.extend(_augment(planes_g, pi_g, mask_g, z))
+            else:
+                examples.append((planes_g, pi_g, mask_g, z))
+        record = None
+        if make_records:
+            margin = int(black_disc[g] - white_disc[g])
+            record = {"iteration": iteration, "kind": "selfplay",
+                      "result": f"{'+' if margin >= 0 else ''}{margin}",
+                      "plies": len(history[g]), "moves": rec_moves[g]}
+        per_game.append((examples, record, len(history[g])))
+    return per_game
+
+
+def generate_games(evaluator, cfg, rng, num_games, iteration=0, make_records=False):
+    """Play `num_games` self-play games; return (examples, records, stats).
+
+    Path selection (see the module docstring):
+      * `cfg.selfplay_arrayops` (default) — the whole batch of games is searched
+        with array ops (`_play_batch`): batched engine + batched MCTS, the big win.
+      * else `cfg.selfplay_workers > 1` — split games across worker PROCESSES
+        (`_play_parallel`); or the single-process coroutine pool (`_play_pool`).
+    The array-ops path couples games through one `rng`; the pool paths seed each
+    game independently (reproducible per seed), which the parity tests rely on.
     """
-    seeds = [int(s) for s in rng.integers(1, np.iinfo(np.int64).max, size=num_games)]
-    per_game = _play_pool(evaluator, cfg, seeds, iteration=iteration,
-                          make_records=make_records)
+    if getattr(cfg, "selfplay_arrayops", False) and num_games > 1:
+        per_game = _play_batch(evaluator, cfg, rng, num_games, iteration=iteration,
+                               make_records=make_records)
+    else:
+        seeds = [int(s) for s in rng.integers(1, np.iinfo(np.int64).max, size=num_games)]
+        workers = int(getattr(cfg, "selfplay_workers", 1) or 1)
+        if workers > 1 and num_games > 1:
+            per_game = _play_parallel(evaluator, cfg, seeds, min(workers, num_games),
+                                      iteration=iteration, make_records=make_records)
+        else:
+            per_game = _play_pool(evaluator, cfg, seeds, iteration=iteration,
+                                  make_records=make_records)
 
     examples, records, lengths = [], [], []
     for ex, rec, plies in per_game:

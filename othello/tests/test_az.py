@@ -17,13 +17,21 @@ sys.path.insert(0, _HERE)
 import numpy as np
 import torch
 
-from board_numpy import BLACK, apply_move, initial_board, legal_moves
+from board_numpy import BLACK, apply_move, initial_board, is_terminal, legal_moves
 from encode import encode, legal_action_mask
 from config import Config
 from network import Evaluator, OthelloNet
 from mcts import MCTS, visit_policy
 from replay_buffer import ReplayBuffer
-from selfplay import _play_pool, generate_games, play_game
+from selfplay import (
+    _chunk,
+    _play_batch,
+    _play_parallel,
+    _play_pool,
+    generate_games,
+    play_game,
+    shutdown_selfplay_workers,
+)
 from train import loss_batch, make_optimizer, train_steps
 
 from harness import check, run
@@ -146,6 +154,38 @@ def test_batched_selfplay_matches_serial():
           and all(np.array_equal(a[0], b[0]) for a, b in zip(ex1, ex2)))
 
 
+def test_arrayops_selfplay_matches_serial_greedy():
+    """Array-ops self-play (batched engine + batched MCTS, vectorised over games)
+    plays the SAME game as the trusted serial MCTS when both are greedy and
+    noise-free — an end-to-end check of the whole batched loop (search, passes,
+    terminal detection, history, z-stamping), not just a component."""
+    from types import SimpleNamespace
+    net = _tiny_net()
+    ev = Evaluator(net)
+    cfg = SimpleNamespace(c_puct=1.5, dirichlet_alpha=0.3, dirichlet_eps=0.25,
+                          sims_selfplay=12, temp_moves=0, augment=False)
+
+    board, player, ref = initial_board(), BLACK, []      # deterministic serial game
+    m = MCTS(ev, c_puct=1.5)
+    while not is_terminal(board):
+        move = int(m.run(board, int(player), cfg.sims_selfplay, add_noise=False).argmax())
+        ref.append(move)
+        board = apply_move(board, int(player), move); player = -player
+
+    # greedy + no noise -> all games identical; must match the serial line move-for-move
+    pg = _play_batch(ev, cfg, np.random.default_rng(0), 3, make_records=True, add_noise=False)
+    check("array-ops greedy self-play == serial greedy, move-for-move",
+          all([e["move"] for e in pg[g][1]["moves"]] == ref for g in range(3)))
+
+    cfg_aug = SimpleNamespace(c_puct=1.5, dirichlet_alpha=0.3, dirichlet_eps=0.25,
+                              sims_selfplay=12, temp_moves=4, augment=True)
+    ex, rec, plies = _play_batch(ev, cfg_aug, np.random.default_rng(2), 4)[0]
+    planes, pi, mask, z = ex[0]
+    check("array-ops augments x8, valid planes/pi/z",
+          len(ex) == plies * 8 and planes.shape == (3, 8, 8)
+          and abs(float(pi.sum()) - 1.0) < 1e-4 and z in (-1.0, 0.0, 1.0))
+
+
 def test_overfit_tiny():
     """The net memorises a handful of fixed positions -> loss ~0 (training works)."""
     net = _tiny_net()
@@ -170,6 +210,34 @@ def test_overfit_tiny():
     check(f"overfit-tiny loss collapses ({first:.2f} -> {float(total):.4f})", float(total) < 0.05)
 
 
+# --- multiprocess self-play (slow: spawns worker processes) ------------------
+def test_parallel_selfplay_matches_inprocess():
+    """Multiprocess self-play produces exactly the games the single-process pool
+    would. Each worker runs `_play_pool` on a seed-slice, so the parallel result
+    equals the in-process chunk pools concatenated, byte-for-byte — validating the
+    plumbing (weight transfer, seed chunking, order) without depending on
+    float-rounding tie-breaks. This is the CPU-bound throughput lever."""
+    net = _tiny_net()
+    ev = Evaluator(net)
+    cfg = Config.tiny(sims_selfplay=6, selfplay_concurrency=3)
+    seeds = [int(s) for s in np.random.default_rng(5).integers(1, 2 ** 62, size=5)]
+
+    ref = []
+    for c in _chunk(seeds, 2):                 # what each worker will run, in-process
+        ref += _play_pool(ev, cfg, c)
+    try:
+        par = _play_parallel(ev, cfg, seeds, 2)   # spawns 2 worker processes
+        same = len(par) == len(ref) and all(
+            len(a[0]) == len(b[0]) and all(
+                np.array_equal(x[0], y[0]) and np.array_equal(x[1], y[1])
+                and np.array_equal(x[2], y[2]) and x[3] == y[3]
+                for x, y in zip(a[0], b[0]))
+            for a, b in zip(par, ref))
+        check("parallel workers reproduce the in-process pools byte-for-byte", same)
+    finally:
+        shutdown_selfplay_workers()            # reap the spawned processes
+
+
 # --- whole loop (slow) -------------------------------------------------------
 def test_train_loop_end_to_end():
     from train_loop import train
@@ -188,8 +256,9 @@ def test_train_loop_end_to_end():
 
 FAST = [test_network_and_evaluator, test_mcts_basic, test_replay_buffer,
         test_selfplay_produces_valid_examples, test_evaluate_batch_matches_single,
-        test_batched_selfplay_matches_serial, test_overfit_tiny]
-SLOW = [test_train_loop_end_to_end]
+        test_batched_selfplay_matches_serial, test_arrayops_selfplay_matches_serial_greedy,
+        test_overfit_tiny]
+SLOW = [test_parallel_selfplay_matches_inprocess, test_train_loop_end_to_end]
 
 if __name__ == "__main__":
     run(FAST, SLOW, "az")

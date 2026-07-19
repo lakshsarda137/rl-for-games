@@ -26,34 +26,53 @@ runnable artifact. See `README.md` for structure.
 - **First GPU run VERIFIED on Kaggle (2026-07-19)** — on a T4: `CUDA: True`, and both
   `--tiny --device cuda` and `--kaggle` run end to end on GPU (loss prints, eval works,
   checkpoints written).
-- **Batched self-play inference ✅ (2026-07-19)** — the GPU-starvation fix. Self-play
-  now plays `selfplay_concurrency` games concurrently and evaluates ALL their pending
-  MCTS leaves in ONE network call per step (~16× fewer forward calls at concurrency 16,
-  measured on CPU). Verified byte-for-byte identical play vs the serial path per seed
-  (`tests/test_az.py::test_batched_selfplay_matches_serial`). **No long GPU run yet** —
-  this unblocks it; the `kaggle` config was bumped to 96 games / 96 sims (one ~96-board
-  wave per eval). Resume/load-to-play still unwired.
+- **Batched self-play inference ✅ (2026-07-19)** — plays `selfplay_concurrency` games
+  concurrently and evaluates ALL their pending MCTS leaves in ONE network call per step
+  (~16× fewer forward calls). Byte-identical play vs serial per seed
+  (`test_batched_selfplay_matches_serial`). **BUT it barely moved throughput**: a live
+  Kaggle T4 run still sat at **~0.4 games/sec with the GPU near-idle and CPU pinned**.
+  Diagnosis (correcting the plan's premise): for the small 5×64 net the network is only
+  ~13% of self-play time — the real wall is single-threaded pure-Python MCTS + NumPy
+  engine. Batching was necessary but not sufficient.
+- **Multiprocess self-play ✅ (2026-07-19)** — a fallback throughput lever, now superseded
+  by array-ops for the real config. `cfg.selfplay_workers` spawn processes each run the
+  batched pool on a slice of the per-game seeds (`az/selfplay.py::_play_parallel`). Measured
+  **3.5× at 4 workers on a 10-core Mac**; byte-identical to the in-process pools
+  (`test_parallel_selfplay_matches_inprocess`). Used only when `selfplay_arrayops=False`.
+- **Array-ops self-play ✅ built + parity-verified (2026-07-19)** — the real rewrite (Phase 4
+  in spirit). `engine/board_batched.py` (batched Othello engine over `[B,8,8]`) +
+  `az/mcts_batched.py` (B trees in lockstep as flat arrays) + `az/selfplay.py::_play_batch`
+  (whole game batch searched with array ops). Kills the per-game Python overhead that was
+  ~87% of self-play. **Correctness is exhaustively verified vs the serial oracles** (engine
+  exact on 3633 positions, MCTS visit counts exact on 434, self-play move-for-move greedy;
+  `tests/test_batched.py`). `cfg.selfplay_arrayops=True` is the default; `kaggle` uses it.
+  **SPEED IS NOT YET SETTLED**: CPU-to-CPU it's ~2.2× the pool, but that's a floor, not the
+  verdict — the tree/engine math is NumPy on the CPU (only the net is on device), so the GPU
+  number is genuinely unknown until smoked. If the GPU smoke is CPU-capped, the last lever is
+  porting the tree ops to Torch-CUDA tensors (needs an NVIDIA GPU to build). **No long GPU
+  run; resume/load-to-play still unwired.**
 
 ## Next steps (in likely order)
-1. **✅ DONE — Batched self-play inference.** `az/mcts.py` is now a coroutine
-   (`run_root_gen`) that *yields* each leaf's `(board, player)` and receives
-   `(priors, value)` via `.send()`; `az/selfplay.py::_play_pool` runs many game
-   coroutines at once and evaluates all their pending leaves via
-   `Evaluator.evaluate_batch` in ONE forward pass per step. Serial `run`/`run_root`
-   still work (they drive the same coroutine with the single-board evaluator), so
-   eval/`az_player` are unchanged. Batch size = `cfg.selfplay_concurrency` (capped at
-   `games_per_iter`). **Next: actually do the long Kaggle run** now that the GPU is fed
-   — consider raising `games_per_iter`/`selfplay_concurrency` further to fill a bigger
-   batch, and watch `selfplay_games_per_sec` in `data/metrics.jsonl` climb.
-2. **Checkpoint resume + load-to-play.** `train_loop.train` starts fresh; add
-   `--resume <ckpt>` (load `state_dict`) so training continues across Kaggle sessions /
-   weekly quota. Also wire "load checkpoint → az_player" into `play_cli`/`backend` so the
-   trained bot can actually be watched/played. **Neither is wired; the user asked about
-   both** (resume-elsewhere and using the weights).
-3. **Phase 4 — PyCUDA batched bitboard engine** (`engine/board_cuda.py`, the
-   resume-worthy custom-kernel piece). Complements batching by moving the game engine
-   itself onto the GPU. NOTE: needs an NVIDIA GPU even to develop — can't be built on the
-   user's Mac. Verify parity vs the NumPy engine.
+1. **Self-play throughput — built, GPU speed unsettled.** Three levers exist (see the
+   `az/selfplay.py` module docstring): batched inference (coroutine `_play_pool`),
+   multiprocess (`_play_parallel`, fallback), and **array-ops** (`_play_batch` + batched
+   engine/MCTS, the default). All are correctness-verified vs serial. **Immediate open
+   item: GPU-smoke the array-ops path** (`--kaggle`, `run/KAGGLE.md` cell 3a) to get the
+   real g/s — it's the honest unknown. If it's CPU-capped (tree/engine are NumPy on CPU),
+   port those to Torch-CUDA tensors (item 3; needs an NVIDIA GPU to build).
+2. **Checkpoint resume + load-to-play** (user asked to do this next, alongside a metrics
+   dashboard). `train_loop.train` starts fresh; add `--resume <ckpt>` (load `state_dict`)
+   so training continues across Kaggle sessions / weekly quota — without it, each new
+   session restarts from scratch, so a real multi-session run isn't safe yet. Also wire
+   "load checkpoint → az_player" into `play_cli`/`backend`. **Also wanted: a metrics
+   dashboard** that plots `data/metrics.jsonl` directly (the plan's pillar C; TensorBoard
+   is the intended-but-broken viewer here, so read the jsonl instead). Both were paused in
+   favour of the throughput fix.
+3. **Phase 4 — PyCUDA batched bitboard engine** (`engine/board_cuda.py`). This is the
+   BIG throughput lever the multiprocessing work only approximates: move the pure-Python
+   MCTS/engine grind (the actual ~87% bottleneck) onto the GPU. NOTE: needs an NVIDIA GPU
+   even to develop — **can't be built or verified on the user's Mac** (this is why
+   multiprocessing was done first). Verify parity vs the NumPy engine.
 4. **Wire self-play records into the web UI** (watch/replay mode; records already exist
    in `data/game_records/`).
 5. **Elo + promotion gating** in evaluation (currently just win-rate ladder).
