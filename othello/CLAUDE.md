@@ -22,23 +22,36 @@ runnable artifact. See `README.md` for structure.
 - **Web app (Phase 5, play mode)** ✅ — `serve/`. Play any bot / watch bots.
   Self-play *replay* in the UI is not built (records exist in `data/game_records/`).
 - **Kaggle setup** ✅ — code pushed to GitHub (github.com/lakshsarda137/rl-for-games);
-  `Config.kaggle()` + `run/KAGGLE.md`. **First real GPU run has not been done yet.**
+  `Config.kaggle()` + `run/KAGGLE.md`.
+- **First GPU run VERIFIED on Kaggle (2026-07-19)** — on a T4: `CUDA: True`, and both
+  `--tiny --device cuda` and `--kaggle` run end to end on GPU (loss prints, eval works,
+  checkpoints written). **BUT the expected bottleneck is confirmed live: the CPU pins at
+  100% while the GPU sits ~20% utilized** (~0.5 games/sec). MCTS evaluates one board per
+  network call (unbatched), so the GPU is starved. **No long training run has been done —
+  batched inference must come first** (see next steps). Resume/load-to-play still unwired.
 
 ## Next steps (in likely order)
-1. **Run the first Kaggle GPU training** (`run/KAGGLE.md`, `--kaggle`). Confirm it
-   trains on GPU and `max_depth_beaten` climbs past depth-2 toward depth-4.
-2. **Batched self-play inference** — THE key performance lever. MCTS currently
-   evaluates ONE board per network call (see `az/mcts.py` `_expand` → `Evaluator.__call__`).
-   Unbatched single-position eval barely uses the GPU. Batching leaf evals across
-   many concurrent games unlocks the full 160-sim / 200-game config. This is the
-   real Phase 3 work and interweaves with Phase 4.
-3. **Checkpoint resume** — `train_loop.train` starts fresh each run. Add
-   `--resume <ckpt>` that loads `state_dict` (needed to continue across Kaggle
-   sessions / weekly quota).
-4. **Phase 4 — PyCUDA batched bitboard engine** (`engine/board_cuda.py`, the
-   resume-worthy custom-kernel piece). Verify parity vs NumPy engine.
-5. **Wire self-play records into the web UI** (watch/replay mode).
-6. **Elo + promotion gating** in evaluation (currently just win-rate ladder).
+1. **Batched self-play inference — DO THIS FIRST (bottleneck is proven live).** MCTS
+   evaluates ONE board per network call (`az/mcts.py` `_expand` → `Evaluator.__call__`),
+   so on GPU the CPU pins at 100% and the GPU idles ~20% — moving to Kaggle barely
+   helped. Fix: run many self-play games concurrently and evaluate all their pending
+   MCTS leaves in ONE batched network call (a GPU evals 256 boards ≈ as fast as 1).
+   This is a PyTorch restructuring of `selfplay.py`/`mcts.py` (no CUDA needed), the
+   single biggest speedup, and unlocks the full 160-sim / 200-game config. Keep the
+   tiered tests fast; verify play quality is unchanged. Only THEN do a long Kaggle run.
+2. **Checkpoint resume + load-to-play.** `train_loop.train` starts fresh; add
+   `--resume <ckpt>` (load `state_dict`) so training continues across Kaggle sessions /
+   weekly quota. Also wire "load checkpoint → az_player" into `play_cli`/`backend` so the
+   trained bot can actually be watched/played. **Neither is wired; the user asked about
+   both** (resume-elsewhere and using the weights).
+3. **Phase 4 — PyCUDA batched bitboard engine** (`engine/board_cuda.py`, the
+   resume-worthy custom-kernel piece). Complements batching by moving the game engine
+   itself onto the GPU. NOTE: needs an NVIDIA GPU even to develop — can't be built on the
+   user's Mac. Verify parity vs the NumPy engine.
+4. **Wire self-play records into the web UI** (watch/replay mode; records already exist
+   in `data/game_records/`).
+5. **Elo + promotion gating** in evaluation (currently just win-rate ladder).
+6. **Polish the web UI** — the user finds it visually rough; a design pass is wanted.
 
 ## Non-obvious architectural decisions
 These will bite you if you change code without knowing them:
