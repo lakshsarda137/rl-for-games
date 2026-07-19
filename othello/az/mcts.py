@@ -5,6 +5,18 @@ network call (no rollouts — the value head is the score), then BACK UP the val
 The output is the root visit distribution, which is a stronger policy than the
 raw network because it integrates look-ahead.
 
+The search is written as a COROUTINE (`run_root_gen`): instead of calling the
+network itself, it *yields* a leaf's `(board, player)` and waits to be handed
+back `(priors, value)` via `.send()`. This lets a driver run many independent
+searches at once and evaluate ALL their pending leaves in one batched network
+call — the fix for the GPU-starvation bottleneck (a GPU evals 256 boards ≈ as
+fast as 1). The serial `run`/`run_root` keep the old one-call-per-leaf interface
+by driving the same coroutine with the single-board `evaluator`, so there is a
+single search implementation. Within any one game the simulations stay strictly
+sequential, so batching across games leaves each game's search identical (bar
+float32 rounding in the batched matmul, ~1e-7, which cannot flip a move once
+root Dirichlet noise has broken any ties).
+
 Perspective (consistent with encode.py): the evaluator returns a value from the
 side-to-move's point of view. On backup, a leaf value `v` is added to edge
 (node, a) as `+v` when that node's mover is the leaf's mover and `-v` otherwise
@@ -51,8 +63,11 @@ def _terminal_value(board, player):
 
 
 class MCTS:
-    def __init__(self, evaluator, c_puct=1.5, dirichlet_alpha=0.3,
+    def __init__(self, evaluator=None, c_puct=1.5, dirichlet_alpha=0.3,
                  dirichlet_eps=0.25, rng=None):
+        # `evaluator` may be None: the coroutine path (batched self-play) never
+        # calls it — the driver answers leaf requests instead. It's only needed
+        # for the serial `run`/`run_root` convenience wrappers below.
         self.evaluator = evaluator
         self.c_puct = c_puct
         self.dirichlet_alpha = dirichlet_alpha
@@ -64,22 +79,34 @@ class MCTS:
         return self.run_root(board, player, sims, add_noise).N.copy()
 
     def run_root(self, board, player, sims, add_noise=True):
-        """Like `run`, but return the root node (for visit counts + root value)."""
+        """Serial search: drive the coroutine, answering each leaf with one net
+        call via `self.evaluator`. Returns the root node."""
+        return _drive_serial(self.run_root_gen(board, player, sims, add_noise),
+                             self.evaluator)
+
+    def run_root_gen(self, board, player, sims, add_noise=True):
+        """Coroutine search. Yields `(board, player)` leaf-eval requests and
+        expects `(priors, value)` back via `.send()`; returns the root node on
+        completion. Drive it serially with `_drive_serial`, or batch many of
+        these together (az/selfplay.py) to feed a GPU."""
         root = _Node(player)
-        self._expand(root, board)
+        yield from self._expand_gen(root, board)
         if add_noise and not root.terminal:
             self._add_dirichlet(root)
         for _ in range(sims):
-            self._simulate(root, board)
+            yield from self._simulate_gen(root, board)
         return root
 
-    def _expand(self, node, board):
-        """Evaluate a leaf: set priors + legal mask (or terminal value)."""
+    def _expand_gen(self, node, board):
+        """Evaluate a leaf: set priors + legal mask (or terminal value).
+
+        Yields the leaf's `(board, player)` for the driver to evaluate; a
+        terminal leaf needs no net call and returns its exact result instead."""
         if is_terminal(board):
             node.terminal = True
             node.tvalue = _terminal_value(board, node.player)
             return node.tvalue
-        priors, value = self.evaluator(board, node.player)
+        priors, value = yield (board, node.player)
         node.P = priors.astype(np.float32)
         node.legal = legal_action_mask(board, node.player) > 0
         return value
@@ -105,7 +132,9 @@ class MCTS:
         scores[~node.legal] = _NEG_INF
         return int(scores.argmax())
 
-    def _simulate(self, root, root_board):
+    def _simulate_gen(self, root, root_board):
+        """One simulation as a coroutine: SELECT to a leaf, yield it for
+        EVALUATE (unless terminal), then BACK UP. Yields at most once."""
         node, board, path = root, root_board, []
         while True:
             if node.terminal:
@@ -118,12 +147,35 @@ class MCTS:
             if child is None:
                 child = _Node(-node.player)  # a move or a pass both flip the mover
                 node.children[action] = child
-                value, leaf_player = self._expand(child, board), child.player
+                value = yield from self._expand_gen(child, board)
+                leaf_player = child.player
                 break
             node = child
+        self._backup(path, value, leaf_player)
+
+    @staticmethod
+    def _backup(path, value, leaf_player):
+        """Add the leaf value along the visited path, sign per node's mover."""
         for n, a in path:
             n.N[a] += 1.0
             n.W[a] += value if n.player == leaf_player else -value
+
+
+def _drive_serial(gen, evaluator):
+    """Run a search coroutine to completion, answering each yielded leaf with a
+    single-board `evaluator(board, player)` call. Returns the coroutine's value
+    (the root node). Used by the non-batched paths (eval, single-game play)."""
+    try:
+        request = gen.send(None)
+    except StopIteration as done:
+        return done.value
+    while True:
+        board, player = request
+        result = evaluator(board, player)
+        try:
+            request = gen.send(result)
+        except StopIteration as done:
+            return done.value
 
 
 def visit_policy(counts, temperature):

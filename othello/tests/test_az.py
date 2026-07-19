@@ -23,7 +23,7 @@ from config import Config
 from network import Evaluator, OthelloNet
 from mcts import MCTS, visit_policy
 from replay_buffer import ReplayBuffer
-from selfplay import play_game
+from selfplay import _play_pool, generate_games, play_game
 from train import loss_batch, make_optimizer, train_steps
 
 from harness import check, run
@@ -90,6 +90,62 @@ def test_selfplay_produces_valid_examples():
           "mcts_value" in rec["moves"][0] and "top_policy" in rec["moves"][0])
 
 
+def test_evaluate_batch_matches_single():
+    """Batched inference matches one-board-at-a-time (eval-mode BatchNorm uses
+    fixed stats, so a board's output doesn't depend on its batch) — up to float32
+    last-bit rounding from the batched matmul's reduction order (~1e-7). A masking
+    or reshape bug would show as a difference orders of magnitude larger."""
+    net = _tiny_net()
+    ev = Evaluator(net)
+    board, p, boards, players = initial_board(), BLACK, [], []
+    for _ in range(6):                       # a handful of real, distinct positions
+        boards.append(board.copy()); players.append(p)
+        legal = legal_moves(board, p)
+        if not legal:
+            break
+        board = apply_move(board, p, legal[0]); p = -p
+    batched = ev.evaluate_batch(boards, players)      # one forward pass, many boards
+    max_dp = max_dv = 0.0
+    for (pb, vb), b, pl in zip(batched, boards, players):
+        ps, vs = ev(b, pl)                            # a size-1 batch (via __call__)
+        max_dp = max(max_dp, float(np.abs(pb - ps).max()))
+        max_dv = max(max_dv, abs(vb - vs))
+    check(f"batched priors match single-board eval (max dp {max_dp:.1e})", max_dp < 1e-5)
+    check(f"batched value matches single-board eval (max dv {max_dv:.1e})", max_dv < 1e-5)
+
+
+def test_batched_selfplay_matches_serial():
+    """The play-quality guarantee: a batched game matches the serial game with the
+    same seed, example for example — batching changes speed, not strength. It comes
+    out byte-identical because the only difference (float32 matmul rounding, ~1e-7)
+    is far too small to flip a PUCT argmax once root Dirichlet noise breaks ties."""
+    net = _tiny_net()
+    ev = Evaluator(net)
+    # Kept cheap for the FAST tier: few sims, 3 games, 2 in flight -> still exercises
+    # multi-game batching AND the "start a new game when one finishes" refill path.
+    cfg = Config.tiny(sims_selfplay=4, selfplay_concurrency=2)
+    seeds = [11, 22, 33]
+
+    serial = [play_game(ev, cfg, np.random.default_rng(s))[0] for s in seeds]
+    pooled = _play_pool(ev, cfg, seeds)               # concurrent, one net call per step
+
+    check("pool returns one result per game", len(pooled) == len(seeds))
+    identical = True
+    for (ex_b, _rec, _plies), ex_s in zip(pooled, serial):
+        identical = identical and len(ex_b) == len(ex_s) and all(
+            np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+            and np.array_equal(a[2], b[2]) and a[3] == b[3]
+            for a, b in zip(ex_b, ex_s))
+    check("batched self-play examples identical to serial, game for game", identical)
+
+    # And the public generator is deterministic given the master rng.
+    ex1, _, st1 = generate_games(ev, cfg, np.random.default_rng(7), 2, make_records=True)
+    ex2, _, st2 = generate_games(ev, cfg, np.random.default_rng(7), 2, make_records=True)
+    check("generate_games is reproducible for a fixed seed",
+          len(ex1) == len(ex2) and st1["num_examples"] == st2["num_examples"]
+          and all(np.array_equal(a[0], b[0]) for a, b in zip(ex1, ex2)))
+
+
 def test_overfit_tiny():
     """The net memorises a handful of fixed positions -> loss ~0 (training works)."""
     net = _tiny_net()
@@ -131,7 +187,8 @@ def test_train_loop_end_to_end():
 
 
 FAST = [test_network_and_evaluator, test_mcts_basic, test_replay_buffer,
-        test_selfplay_produces_valid_examples, test_overfit_tiny]
+        test_selfplay_produces_valid_examples, test_evaluate_batch_matches_single,
+        test_batched_selfplay_matches_serial, test_overfit_tiny]
 SLOW = [test_train_loop_end_to_end]
 
 if __name__ == "__main__":

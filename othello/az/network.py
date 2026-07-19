@@ -78,11 +78,20 @@ def masked_log_softmax(logits, legal_mask):
 
 
 class Evaluator:
-    """Wraps a net for MCTS: one board -> (priors over 65 actions, value).
+    """Wraps a net for MCTS: boards -> (priors over 65 actions, value).
 
     Priors are a proper distribution over *legal* actions (0 on illegal ones);
-    value is from the side-to-move's perspective. Single-position eval — fine at
-    tiny scale; batch later for throughput.
+    value is from the side-to-move's perspective. `evaluate_batch` runs many
+    positions through the net in ONE forward pass — a GPU evaluates 256 boards
+    at ~the cost of one, so batching many concurrent self-play games' pending
+    MCTS leaves here is what keeps the GPU fed (see az/selfplay.py). `__call__`
+    is the single-position convenience used by the serial (eval) path.
+
+    Because the net is in eval mode, BatchNorm uses fixed running statistics, so
+    a board's output is independent of what else shares its batch — batched eval
+    matches one-at-a-time eval to within float32 rounding (~1e-7, from the matmul
+    reduction order). That is far below self-play's own noise, so play strength is
+    unaffected; MCTS tie-breaking is protected by root Dirichlet noise anyway.
     """
 
     def __init__(self, net, device="cpu"):
@@ -90,11 +99,22 @@ class Evaluator:
         self.device = device
 
     @torch.no_grad()
+    def evaluate_batch(self, boards, players):
+        """Evaluate many (board, player) at once -> list of (priors, value).
+
+        One net forward pass over the whole batch; results are returned in the
+        input order, each priors a length-65 float32 distribution over legal
+        actions and value a Python float from that board's mover's perspective.
+        """
+        planes = np.stack([encode(b, p) for b, p in zip(boards, players)])
+        x = torch.from_numpy(planes).to(self.device)
+        logits, values = self.net(x)
+        masks = np.stack([legal_action_mask(b, p) for b, p in zip(boards, players)])
+        mask = torch.from_numpy(masks).to(self.device).bool()
+        priors = torch.exp(masked_log_softmax(logits, mask)).cpu().numpy().astype(np.float32)
+        values = values.cpu().numpy().astype(np.float32)
+        return [(priors[i], float(values[i])) for i in range(len(boards))]
+
     def __call__(self, board, player):
-        planes = encode(board, player)
-        x = torch.from_numpy(planes).unsqueeze(0).to(self.device)
-        logits, value = self.net(x)
-        mask = torch.from_numpy(legal_action_mask(board, player)).to(self.device).bool()
-        logp = masked_log_softmax(logits[0], mask)
-        priors = torch.exp(logp).cpu().numpy().astype(np.float32)
-        return priors, float(value.item())
+        (priors, value), = self.evaluate_batch([board], [player])
+        return priors, value
