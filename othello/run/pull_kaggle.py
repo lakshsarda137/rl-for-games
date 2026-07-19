@@ -119,9 +119,17 @@ def pull_once(kernel, dataset, out):
     kaggle = _kaggle_cli()
     with tempfile.TemporaryDirectory(prefix="kaggle_pull_") as tmp:
         if not _download(kaggle, kernel, dataset, tmp):
-            print("[pull] download failed (see output above) — skipping this cycle.")
+            print("[pull] download failed (see output above) — will retry.")
             return False
-        summary = install_from_dir(tmp, out)
+        try:
+            summary = install_from_dir(tmp, out)
+        except FileNotFoundError as exc:
+            # No committed output with a checkpoint yet — normal while a run is
+            # still going / uncommitted. Don't crash the --watch loop; just retry.
+            print(f"[pull] nothing to install yet: {exc}")
+            print("[pull] (need a COMMITTED Kaggle run whose output has "
+                  "checkpoints/ + metrics.jsonl) — will retry.")
+            return False
     print(f"[pull] installed: {summary}")
     print("[pull] refresh http://127.0.0.1:8000/dashboard (or rebuild with "
           "run/dashboard.py); the web app will use the new weights on the next New Game.")
