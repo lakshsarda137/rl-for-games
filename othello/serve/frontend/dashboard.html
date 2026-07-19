@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Othello AlphaZero — Training Dashboard</title>
+<style>
+  /* ---- palette (validated dataviz default; light + dark) ------------------ */
+  .viz-root {
+    color-scheme: light;
+    --plane:          #f9f9f7;   /* page background */
+    --surface:        #fcfcfb;   /* card surface   */
+    --ink:            #0b0b0b;   /* primary text   */
+    --ink-2:          #52514e;   /* secondary text */
+    --muted:          #898781;   /* axis / labels  */
+    --grid:           #e1e0d9;   /* hairline grid  */
+    --axis:           #c3c2b7;   /* baseline       */
+    --border:         rgba(11,11,11,0.10);
+    --good:           #006300;
+    --s1:             #2a78d6;   /* blue    */
+    --s2:             #008300;   /* green   */
+    --s3:             #e87ba4;   /* magenta */
+    --s4:             #eda100;   /* yellow  */
+    --s5:             #1baf7a;   /* aqua    */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+      --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+      --border: rgba(255,255,255,0.10); --good: #0ca30c;
+      --s1: #3987e5; --s2: #008300; --s3: #d55181; --s4: #c98500; --s5: #199e70;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --border: rgba(255,255,255,0.10); --good: #0ca30c;
+    --s1: #3987e5; --s2: #008300; --s3: #d55181; --s4: #c98500; --s5: #199e70;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .viz-root {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--plane); color: var(--ink);
+    min-height: 100vh; padding: 28px clamp(16px, 4vw, 48px) 56px;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--s1); }
+
+  header.head { max-width: 1180px; margin: 0 auto 8px; }
+  .head h1 { font-size: 1.5rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .head p.sub { color: var(--ink-2); margin: 0; font-size: 0.95rem; max-width: 70ch; line-height: 1.5; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+    margin-top: 12px; font-size: 0.82rem; color: var(--muted); }
+  .meta-row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good);
+    display: inline-block; margin-right: 6px; vertical-align: middle; }
+  button.refresh { font: inherit; font-size: 0.82rem; color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
+    padding: 5px 11px; cursor: pointer; }
+  button.refresh:hover { border-color: var(--muted); }
+
+  /* KPI tiles */
+  .tiles { max-width: 1180px; margin: 20px auto 4px; display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 12px; }
+  .tile { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px; }
+  .tile .k { font-size: 0.72rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.04em; margin-bottom: 6px; }
+  .tile .v { font-size: 1.7rem; font-weight: 600; line-height: 1; }
+  .tile .u { font-size: 0.8rem; color: var(--ink-2); margin-left: 3px; font-weight: 400; }
+
+  /* chart grid */
+  .grid { max-width: 1180px; margin: 22px auto 0; display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; }
+  .card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 18px 18px 12px; display: flex; flex-direction: column; }
+  .card.wide { grid-column: 1 / -1; }
+  .card h2 { font-size: 1.02rem; margin: 0 0 3px; letter-spacing: -0.01em; }
+  .card p.why { font-size: 0.83rem; color: var(--ink-2); margin: 0 0 12px;
+    line-height: 1.5; }
+  .card p.why b { color: var(--ink); font-weight: 600; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 2px 0 10px;
+    font-size: 0.8rem; color: var(--ink-2); }
+  .legend .it { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .sw { width: 22px; height: 3px; border-radius: 2px; display: inline-block; }
+  .legend .sw.dash { background: repeating-linear-gradient(90deg,
+    var(--muted) 0 5px, transparent 5px 9px); height: 2px; }
+
+  .chart-wrap { position: relative; width: 100%; }
+  svg.chart { width: 100%; height: auto; display: block; overflow: visible; }
+  svg .grid-line { stroke: var(--grid); stroke-width: 1; }
+  svg .axis-line { stroke: var(--axis); stroke-width: 1; }
+  svg .tick-txt  { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  svg .ax-label  { fill: var(--muted); font-size: 11px; }
+  svg .series-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  svg .thresh-line { stroke-width: 1.5; stroke-dasharray: 5 4; opacity: 0.8; }
+  svg .thresh-txt  { font-size: 10.5px; }
+  svg .end-dot { stroke: var(--surface); stroke-width: 2; }
+  svg .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  svg .hv-dot { stroke: var(--surface); stroke-width: 2; }
+
+  .tooltip { position: absolute; pointer-events: none; opacity: 0;
+    transition: opacity 0.08s; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px;
+    font-size: 0.78rem; box-shadow: 0 6px 22px rgba(0,0,0,0.16); min-width: 120px;
+    z-index: 5; }
+  .tooltip .tt-h { color: var(--muted); font-size: 0.72rem; margin-bottom: 5px; }
+  .tooltip .tt-r { display: flex; align-items: center; gap: 7px; line-height: 1.55;
+    justify-content: space-between; }
+  .tooltip .tt-r .lab { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); }
+  .tooltip .tt-r .sw { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .tooltip .tt-r .val { font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+
+  details.table { max-width: 1180px; margin: 22px auto 0; font-size: 0.85rem; }
+  details.table summary { cursor: pointer; color: var(--ink-2); padding: 6px 0; }
+  .table-scroll { overflow-x: auto; margin-top: 8px; border: 1px solid var(--border);
+    border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 10px; text-align: right; white-space: nowrap;
+    border-bottom: 1px solid var(--grid); }
+  th { color: var(--muted); font-weight: 600; text-align: right; position: sticky; top: 0;
+    background: var(--surface); }
+  th:first-child, td:first-child { text-align: left; }
+
+  .empty { max-width: 720px; margin: 60px auto; text-align: center; color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 40px 28px; line-height: 1.6; }
+  .empty code { background: var(--plane); padding: 2px 7px; border-radius: 6px;
+    border: 1px solid var(--border); font-size: 0.9em; }
+  footer.foot { max-width: 1180px; margin: 34px auto 0; color: var(--muted);
+    font-size: 0.78rem; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="viz-root" id="root">
+  <header class="head">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <h1>Othello AlphaZero — Training Dashboard</h1>
+      <button class="refresh" id="refresh" type="button">↻ Refresh</button>
+    </div>
+    <p class="sub">Each iteration the agent plays a batch of games against itself, trains its
+      neural network on them, then is tested on a ladder of minimax opponents. These charts
+      track that loop over time. Every chart says, in plain terms, what it measures and what
+      "getting better" looks like.</p>
+    <div class="meta-row" id="meta"></div>
+  </header>
+
+  <section class="tiles" id="tiles"></section>
+  <section class="grid" id="grid"></section>
+  <details class="table" id="tableBox" hidden>
+    <summary>Show the raw numbers (accessible data table)</summary>
+    <div class="table-scroll"><table id="dataTable"></table></div>
+  </details>
+
+  <div class="empty" id="empty" hidden>
+    <h2 style="margin-top:0">No training metrics yet</h2>
+    <p>This dashboard reads <code>data/metrics.jsonl</code>, which the training loop writes
+       one line per iteration. Run a training pass to populate it:</p>
+    <p><code>python run/train_loop.py --tiny</code> &nbsp;(seconds)&nbsp; or &nbsp;
+       <code>python run/train_loop.py --kaggle</code></p>
+    <p>Then reload this page.</p>
+  </div>
+
+  <footer class="foot" id="foot"></footer>
+</div>
+
+<!--INJECT_METRICS-->
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+
+  // ---- load metrics: injected (static export) or fetched live -------------
+  async function loadRows() {
+    if (Array.isArray(window.__METRICS__)) return { rows: window.__METRICS__, live: false };
+    try {
+      const r = await fetch("/api/metrics", { cache: "no-store" });
+      if (!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      return { rows: j.rows || [], live: true };
+    } catch (e) {
+      return { rows: [], live: false };
+    }
+  }
+
+  // ---- helpers ------------------------------------------------------------
+  const CSS = (name) => getComputedStyle($("root")).getPropertyValue(name).trim();
+  const fmt = (x, d = 2) => (x == null || Number.isNaN(x)) ? "—" :
+    (Math.abs(x) >= 1000 ? Math.round(x).toLocaleString()
+      : Number(x).toFixed(d).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1"));
+  const pct = (x) => x == null ? "—" : Math.round(x * 100) + "%";
+
+  function series(rows, key) {
+    return rows.filter(r => r[key] != null && !Number.isNaN(r[key]))
+               .map(r => ({ x: r.iter, y: +r[key] }));
+  }
+  function depthKeys(rows) {
+    const set = new Set();
+    rows.forEach(r => Object.keys(r).forEach(k => {
+      const m = k.match(/^winrate\/minimax_d(\d+)$/);
+      if (m) set.add(+m[1]);
+    }));
+    return [...set].sort((a, b) => a - b);
+  }
+
+  // ---- SVG line chart -----------------------------------------------------
+  // We draw in REAL pixels (viewBox == measured size) so text stays a constant
+  // size in every card, wide or narrow — no viewBox stretching.
+  const PAD = { l: 48, r: 18, t: 14, b: 36 };
+
+  function drawChart(card, spec) {
+    // spec: { series:[{name,color,pts:[{x,y}],step?}], yMin,yMax,yTicks,
+    //         yFmt, xAll:[iters], thresholds:[{y,label}], valFmt, height }
+    const wrap = document.createElement("div");
+    wrap.className = "chart-wrap";
+    card.appendChild(wrap);
+
+    const W = Math.max(320, Math.round(wrap.getBoundingClientRect().width) || 600);
+    const H = spec.height || 260;
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("class", "chart");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("width", W);
+    svg.setAttribute("height", H);
+    wrap.appendChild(svg);
+    const mk = (tag, attrs, txt) => {
+      const el = document.createElementNS(svgNS, tag);
+      for (const k in attrs) el.setAttribute(k, attrs[k]);
+      if (txt != null) el.textContent = txt;
+      svg.appendChild(el);
+      return el;
+    };
+
+    const xs = spec.xAll;
+    const xMin = xs[0], xMax = xs[xs.length - 1];
+    const spanX = Math.max(1, xMax - xMin);
+    const yMin = spec.yMin, yMax = spec.yMax;
+    const spanY = Math.max(1e-9, yMax - yMin);
+    const px = (x) => PAD.l + (x - xMin) / spanX * (W - PAD.l - PAD.r);
+    const py = (y) => H - PAD.b - (y - yMin) / spanY * (H - PAD.t - PAD.b);
+
+    // y gridlines + ticks
+    const nY = spec.yTicks || 4;
+    for (let i = 0; i <= nY; i++) {
+      const yv = yMin + (spanY) * i / nY;
+      const yy = py(yv);
+      mk("line", { class: "grid-line", x1: PAD.l, y1: yy, x2: W - PAD.r, y2: yy });
+      mk("text", { class: "tick-txt", x: PAD.l - 7, y: yy + 3.5, "text-anchor": "end" },
+         spec.yFmt(yv));
+    }
+    // x ticks (about 6, integer iterations)
+    const nX = Math.min(6, spanX);
+    const seen = new Set();
+    for (let i = 0; i <= nX; i++) {
+      const xv = Math.round(xMin + spanX * i / nX);
+      if (seen.has(xv)) continue; seen.add(xv);
+      mk("text", { class: "tick-txt", x: px(xv), y: H - PAD.b + 15, "text-anchor": "middle" }, xv);
+    }
+    // axes
+    mk("line", { class: "axis-line", x1: PAD.l, y1: H - PAD.b, x2: W - PAD.r, y2: H - PAD.b });
+    mk("text", { class: "ax-label", x: (PAD.l + W - PAD.r) / 2, y: H - 3, "text-anchor": "middle" },
+       "training iteration");
+
+    // threshold lines
+    (spec.thresholds || []).forEach(t => {
+      const yy = py(t.y);
+      mk("line", { class: "thresh-line", x1: PAD.l, y1: yy, x2: W - PAD.r, y2: yy,
+                   stroke: CSS("--muted") });
+      mk("text", { class: "thresh-txt", x: W - PAD.r, y: yy - 4, "text-anchor": "end",
+                   fill: CSS("--muted") }, t.label);
+    });
+
+    // series
+    spec.series.forEach(s => {
+      if (!s.pts.length) return;
+      let d = "";
+      s.pts.forEach((p, i) => {
+        const X = px(p.x), Y = py(p.y);
+        if (i === 0) { d += `M${X},${Y}`; return; }
+        if (s.step) { d += `L${X},${py(s.pts[i - 1].y)}L${X},${Y}`; }  // hold then step
+        else { d += `L${X},${Y}`; }
+      });
+      mk("path", { class: "series-line", d, stroke: s.color });
+      const last = s.pts[s.pts.length - 1];
+      mk("circle", { class: "end-dot", cx: px(last.x), cy: py(last.y), r: 3.5, fill: s.color });
+    });
+
+    // ---- hover layer ------------------------------------------------------
+    const tip = document.createElement("div");
+    tip.className = "tooltip";
+    wrap.appendChild(tip);
+    const cross = mk("line", { class: "cross", x1: 0, y1: PAD.t, x2: 0, y2: H - PAD.b, opacity: 0 });
+    const dots = spec.series.map(s => mk("circle",
+      { class: "hv-dot", r: 4, fill: s.color, opacity: 0 }));
+    const overlay = mk("rect", { x: PAD.l, y: PAD.t, width: W - PAD.l - PAD.r,
+      height: H - PAD.t - PAD.b, fill: "transparent" });
+
+    overlay.addEventListener("mousemove", (ev) => {
+      const rect = svg.getBoundingClientRect();
+      const relX = (ev.clientX - rect.left) / rect.width * W;
+      // nearest iteration in xAll
+      let it = xs[0], best = Infinity;
+      xs.forEach(v => { const dd = Math.abs(px(v) - relX); if (dd < best) { best = dd; it = v; } });
+      const cx = px(it);
+      cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("opacity", 1);
+      let rowsHtml = "";
+      spec.series.forEach((s, i) => {
+        const pt = s.pts.find(p => p.x === it);
+        if (pt) {
+          dots[i].setAttribute("cx", cx); dots[i].setAttribute("cy", py(pt.y));
+          dots[i].setAttribute("opacity", 1);
+          rowsHtml += `<div class="tt-r"><span class="lab"><span class="sw" style="background:${s.color}"></span>${s.name}</span>`
+            + `<span class="val">${spec.valFmt(pt.y)}</span></div>`;
+        } else { dots[i].setAttribute("opacity", 0); }
+      });
+      tip.innerHTML = `<div class="tt-h">iteration ${it}</div>${rowsHtml}`;
+      tip.style.opacity = 1;
+      // position tooltip within wrap
+      const wpx = cx / W * rect.width;
+      const left = Math.min(rect.width - tip.offsetWidth - 6,
+                            Math.max(0, wpx + 12));
+      tip.style.left = left + "px";
+      tip.style.top = "6px";
+    });
+    overlay.addEventListener("mouseleave", () => {
+      cross.setAttribute("opacity", 0);
+      dots.forEach(d => d.setAttribute("opacity", 0));
+      tip.style.opacity = 0;
+    });
+  }
+
+  // ---- card builder -------------------------------------------------------
+  function addCard(spec, wide) {
+    if (spec.height == null) spec.height = wide ? 300 : 250;
+    const card = document.createElement("div");
+    card.className = "card" + (wide ? " wide" : "");
+    card.innerHTML = `<h2>${spec.title}</h2><p class="why">${spec.why}</p>`;
+    if (spec.series.length > 1 || (spec.thresholds && spec.thresholds.length)) {
+      const leg = document.createElement("div");
+      leg.className = "legend";
+      spec.series.forEach(s => {
+        leg.innerHTML += `<span class="it"><span class="sw" style="background:${s.color}"></span>${s.name}</span>`;
+      });
+      (spec.thresholds || []).forEach(t => {
+        leg.innerHTML += `<span class="it"><span class="sw dash"></span>${t.label}</span>`;
+      });
+      card.appendChild(leg);
+    }
+    $("grid").appendChild(card);
+    drawChart(card, spec);
+  }
+
+  function niceMax(v) {           // round a max up to a friendly number
+    if (v <= 0) return 1;
+    const mag = Math.pow(10, Math.floor(Math.log10(v)));
+    const n = v / mag;
+    const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+    return step * mag * Math.ceil(v / (step * mag));
+  }
+
+  // ---- build the page -----------------------------------------------------
+  function build(rows, live) {
+    if (!rows.length) { $("empty").hidden = false; return; }
+    rows = rows.slice().sort((a, b) => a.iter - b.iter);
+    const xAll = rows.map(r => r.iter);
+    const last = rows[rows.length - 1];
+    const S = (k) => CSS(k);
+    const COLORS = [S("--s1"), S("--s2"), S("--s3"), S("--s4"), S("--s5")];
+
+    // meta row
+    const beatRows = rows.filter(r => r["max_depth_beaten"] != null);
+    const curBeat = beatRows.length ? beatRows[beatRows.length - 1]["max_depth_beaten"] : null;
+    $("meta").innerHTML =
+      (live ? `<span><span class="dot"></span>Live — reading data/metrics.jsonl</span>`
+            : `<span>Static snapshot</span>`)
+      + `<span>${rows.length} iteration${rows.length > 1 ? "s" : ""} logged</span>`
+      + `<span>latest: iteration ${last.iter}</span>`
+      + (live ? `<span><a href="/">▶ Play / watch the trained net</a></span>` : "");
+
+    // KPI tiles
+    const tiles = [
+      ["Deepest minimax beaten", curBeat == null ? "—" : "d" + curBeat, "&ge;55% win rate"],
+      ["Latest total loss", fmt(last["loss/total"], 3), ""],
+      ["Self-play speed", fmt(last["selfplay_games_per_sec"], 1), "games/sec"],
+      ["Replay buffer", fmt(last["buffer_size"], 0), "positions"],
+      ["Iterations logged", rows.length, ""],
+    ];
+    $("tiles").innerHTML = tiles.map(([k, v, u]) =>
+      `<div class="tile"><div class="k">${k}</div><div class="v">${v}<span class="u">${u}</span></div></div>`
+    ).join("");
+
+    // 1) max_depth_beaten (headline)
+    const beat = series(rows, "max_depth_beaten");
+    const depths = depthKeys(rows);
+    const maxDepth = depths.length ? depths[depths.length - 1] : 4;
+    addCard({
+      title: "Strength: deepest minimax beaten",
+      why: `<b>The headline metric.</b> Each tested iteration, the agent plays the minimax
+        opponents; this is the <b>deepest</b> one it beats at least 55% of the time. Higher is
+        stronger — a rising staircase means the agent is genuinely improving, not just changing.`,
+      series: [{ name: "max depth beaten", color: COLORS[0], pts: beat, step: true }],
+      yMin: 0, yMax: Math.max(1, maxDepth), yTicks: Math.max(1, maxDepth),
+      yFmt: (v) => "d" + Math.round(v), valFmt: (v) => "depth " + Math.round(v),
+      xAll,
+    }, true);
+
+    // 2) win rate vs each depth
+    const wrSeries = depths.map((d, i) => ({
+      name: "vs minimax d" + d, color: COLORS[i % COLORS.length],
+      pts: series(rows, `winrate/minimax_d${d}`),
+    }));
+    if (wrSeries.some(s => s.pts.length)) {
+      addCard({
+        title: "Win rate vs each minimax depth",
+        why: `How often the agent beats each fixed opponent (depth = how far that opponent
+          looks ahead; deeper = harder). A line crossing the dashed <b>55% promotion line</b>
+          means that depth is now "beaten". Curves should climb, and harder depths lag the
+          easy ones.`,
+        series: wrSeries,
+        thresholds: [{ y: 0.55, label: "55% promotion threshold" }],
+        yMin: 0, yMax: 1, yTicks: 4, yFmt: pct, valFmt: pct, xAll,
+      }, true);
+    }
+
+    // 3) training loss
+    const lossSeries = [
+      { name: "total", color: COLORS[0], pts: series(rows, "loss/total") },
+      { name: "policy", color: COLORS[1], pts: series(rows, "loss/policy") },
+      { name: "value",  color: COLORS[2], pts: series(rows, "loss/value") },
+    ].filter(s => s.pts.length);
+    const lossMax = niceMax(Math.max(...lossSeries.flatMap(s => s.pts.map(p => p.y)), 0.1));
+    addCard({
+      title: "Training loss",
+      why: `How wrong the network is on its own games. <b>Policy</b> loss = how far its move
+        hunches are from what the search actually preferred; <b>value</b> loss = how far its
+        win/lose predictions are from the real outcome; total is their sum. Lower is better;
+        it should trend down but is noisy because the training data keeps changing.`,
+      series: lossSeries,
+      yMin: 0, yMax: lossMax, yTicks: 4, yFmt: (v) => fmt(v, 2), valFmt: (v) => fmt(v, 3), xAll,
+    });
+
+    // 4) throughput
+    addCard({
+      title: "Self-play speed",
+      why: `Games generated per second — the throughput of the slow step. It doesn't measure
+        skill, only how fast the loop feeds itself. Higher means more training data per hour;
+        watch it to spot slowdowns.`,
+      series: [{ name: "games/sec", color: COLORS[0], pts: series(rows, "selfplay_games_per_sec") }],
+      yMin: 0, yMax: niceMax(Math.max(...series(rows, "selfplay_games_per_sec").map(p => p.y), 1)),
+      yTicks: 4, yFmt: (v) => fmt(v, 1), valFmt: (v) => fmt(v, 2) + " g/s", xAll,
+    });
+
+    // 5) buffer size
+    addCard({
+      title: "Replay buffer size",
+      why: `How many recent positions are in the training pool. It fills up early then holds
+        near its cap (old games drop off as new ones arrive) — training always learns from a
+        rolling window of the agent's most recent self-play, not one stale batch.`,
+      series: [{ name: "positions", color: COLORS[0], pts: series(rows, "buffer_size") }],
+      yMin: 0, yMax: niceMax(Math.max(...series(rows, "buffer_size").map(p => p.y), 1)),
+      yTicks: 4, yFmt: (v) => fmt(v, 0), valFmt: (v) => fmt(v, 0) + " positions", xAll,
+    });
+
+    // 6) avg game length
+    const glen = series(rows, "game_len_avg");
+    if (glen.length) {
+      addCard({
+        title: "Average game length",
+        why: `Mean number of plies (half-moves) per self-play game. Othello tops out around 60.
+          Mostly a sanity check — wild swings can flag a rules or search bug — and it drifts as
+          the agent's style changes.`,
+        series: [{ name: "plies", color: COLORS[0], pts: glen }],
+        yMin: 0, yMax: niceMax(Math.max(...glen.map(p => p.y), 10)),
+        yTicks: 4, yFmt: (v) => fmt(v, 0), valFmt: (v) => fmt(v, 1) + " plies", xAll,
+      });
+    }
+
+    // data table
+    buildTable(rows, depths);
+    $("tableBox").hidden = false;
+
+    $("foot").innerHTML =
+      `Source: <code>data/metrics.jsonl</code> · one row per training iteration. `
+      + (live ? `Auto-refreshes every 15s while training runs.`
+              : `Static export — regenerate with <code>python run/dashboard.py</code>.`);
+  }
+
+  function buildTable(rows, depths) {
+    const cols = [
+      ["iter", "iter", 0], ["loss/total", "loss", 3],
+      ["loss/policy", "policy", 3], ["loss/value", "value", 3],
+      ["selfplay_games_per_sec", "g/s", 1], ["buffer_size", "buffer", 0],
+      ["game_len_avg", "len", 1], ["max_depth_beaten", "beat", 0],
+      ...depths.map(d => [`winrate/minimax_d${d}`, `d${d}`, "%"]),
+    ];
+    const head = "<thead><tr>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead>";
+    const body = "<tbody>" + rows.map(r => "<tr>" + cols.map(([k, , d]) => {
+      const v = r[k];
+      const cell = v == null ? "—" : (d === "%" ? pct(v) : (d === 0 ? fmt(v, 0) : fmt(v, d)));
+      return `<td>${cell}</td>`;
+    }).join("") + "</tr>").join("") + "</tbody>";
+    $("dataTable").innerHTML = head + body;
+  }
+
+  // ---- run ----------------------------------------------------------------
+  let timer = null, lastRows = null, lastLive = false;
+  async function render() {
+    const { rows, live } = await loadRows();
+    lastRows = rows; lastLive = live;
+    ["tiles", "grid"].forEach(id => $(id).innerHTML = "");
+    $("empty").hidden = true;
+    build(rows, live);
+    if (live && !timer) timer = setInterval(render, 15000);
+  }
+  // Redraw (from cached data, no refetch) on resize so charts stay crisp.
+  let rz = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(rz);
+    rz = setTimeout(() => {
+      if (!lastRows || !lastRows.length) return;
+      ["tiles", "grid"].forEach(id => $(id).innerHTML = "");
+      build(lastRows, lastLive);
+    }, 180);
+  });
+  $("refresh") && $("refresh").addEventListener("click", render);
+  render();
+})();
+</script>
+</body>
+</html>

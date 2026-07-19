@@ -70,9 +70,11 @@ class MetricsLogger:
     going on the jsonl log (which is always the source of truth).
     """
 
-    def __init__(self, out_dir, use_tb=False):
+    def __init__(self, out_dir, use_tb=False, append=False):
+        # A fresh run truncates metrics.jsonl (start a clean timeline); a resume
+        # appends, so the log continues the earlier run's iterations in one file.
         os.makedirs(out_dir, exist_ok=True)
-        self.jsonl = open(os.path.join(out_dir, "metrics.jsonl"), "a")
+        self.jsonl = open(os.path.join(out_dir, "metrics.jsonl"), "a" if append else "w")
         self.tb = None
         if use_tb:
             try:
@@ -101,9 +103,84 @@ class MetricsLogger:
             self.tb.close()
 
 
-def save_checkpoint(net, cfg, iteration, metrics, path):
-    torch.save({"state_dict": net.state_dict(), "config": vars(cfg),
-                "iteration": iteration, "metrics": metrics}, path)
+def save_checkpoint(net, cfg, iteration, metrics, path, optimizer=None, rng=None):
+    """Write a resumable checkpoint.
+
+    Stores everything needed to pick training back up exactly where it stopped:
+    the network weights, the full config (so we know the architecture), the
+    iteration counter, the latest metrics, and — for a faithful resume — the
+    optimizer state (Adam's per-parameter moments) plus the RNG states. The
+    replay buffer is deliberately NOT stored (it refills over ~1-2 iterations).
+    """
+    payload = {"state_dict": net.state_dict(), "config": vars(cfg),
+               "iteration": iteration, "metrics": metrics}
+    if optimizer is not None:
+        payload["optimizer"] = optimizer.state_dict()
+    if rng is not None:
+        payload["numpy_rng_state"] = rng.bit_generator.state
+        payload["torch_rng_state"] = torch.get_rng_state()
+    torch.save(payload, path)
+
+
+def _find_latest_checkpoint(ckpt_dir):
+    """Newest iterNNNN.pt in ckpt_dir (highest iteration), or None if there are none."""
+    if not os.path.isdir(ckpt_dir):
+        return None
+    best, best_it = None, -1
+    for name in os.listdir(ckpt_dir):
+        if name.startswith("iter") and name.endswith(".pt"):
+            try:
+                it = int(name[4:-3])
+            except ValueError:
+                continue
+            if it > best_it:
+                best, best_it = os.path.join(ckpt_dir, name), it
+    return best
+
+
+def load_for_resume(path, cfg, ckpt_dir):
+    """Resolve a --resume value to a checkpoint and rebuild net + optimizer from it.
+
+    `path` may be an explicit .pt file, or "auto"/"latest" to grab the newest
+    checkpoint in `ckpt_dir`. The network is rebuilt with the *checkpoint's*
+    architecture (num_blocks/channels) so the weights load cleanly; the rest of
+    the hyperparameters come from the current `cfg`, so you can change lr, sims,
+    games_per_iter, etc. across sessions. Returns (net, optimizer, start_iter,
+    ckpt) — ckpt is the raw loaded dict so the caller can restore RNG state
+    without re-reading the file.
+    """
+    if path in ("auto", "latest"):
+        resolved = _find_latest_checkpoint(ckpt_dir)
+        if resolved is None:
+            raise FileNotFoundError(
+                f"--resume {path}: no iter*.pt checkpoints found in {ckpt_dir}")
+        path = resolved
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"--resume: checkpoint not found: {path}")
+
+    ckpt = torch.load(path, map_location=cfg.device)
+    saved = ckpt.get("config", {})
+    nb = saved.get("num_blocks", cfg.num_blocks)
+    ch = saved.get("channels", cfg.channels)
+    if (nb, ch) != (cfg.num_blocks, cfg.channels):
+        print(f"[resume] checkpoint architecture is {nb}x{ch}; using it "
+              f"(config asked for {cfg.num_blocks}x{cfg.channels}).")
+
+    net = OthelloNet(nb, ch).to(cfg.device)
+    net.load_state_dict(ckpt["state_dict"])
+    optimizer = make_optimizer(net, cfg)
+    if "optimizer" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer"])
+        # Honour any lr/weight_decay the user changed for this session.
+        for group in optimizer.param_groups:
+            group["lr"] = cfg.lr
+            group["weight_decay"] = cfg.weight_decay
+    start_iter = int(ckpt.get("iteration", 0))
+    print(f"[resume] loaded {os.path.basename(path)} (iteration {start_iter}); "
+          f"continuing at iteration {start_iter + 1}. "
+          f"{'optimizer restored' if 'optimizer' in ckpt else 'fresh optimizer'}; "
+          "replay buffer starts empty and refills.")
+    return net, optimizer, start_iter, ckpt
 
 
 def _write_records(records, out_dir, iteration):
@@ -113,9 +190,18 @@ def _write_records(records, out_dir, iteration):
             json.dump(rec, f)
 
 
-def train(cfg, out_dir=DATA_DIR, eval_every=1, log=True, use_tb=False, verbose=True):
-    """Run the full loop for cfg.iterations; return (net, buffer, history)."""
+def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
+          verbose=True, resume=None):
+    """Run the loop for cfg.iterations more iterations; return (net, buffer, history).
+
+    `resume` (a checkpoint path, or "auto"/"latest") continues an earlier run:
+    the net + optimizer are loaded and iteration numbering picks up where the
+    checkpoint left off, so metrics.jsonl and checkpoints keep a single timeline
+    across sessions. `cfg.iterations` is always "how many MORE iterations now".
+    """
     cfg.device = resolve_device(cfg.device)
+    if eval_every is None:                     # default: honour the config
+        eval_every = getattr(cfg, "eval_every", 1)
     torch.manual_seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
     ckpt_dir = os.path.join(out_dir, "checkpoints")
@@ -123,15 +209,23 @@ def train(cfg, out_dir=DATA_DIR, eval_every=1, log=True, use_tb=False, verbose=T
     for d in (ckpt_dir, rec_dir):
         os.makedirs(d, exist_ok=True)
 
-    logger = MetricsLogger(out_dir, use_tb=use_tb) if log else None
+    logger = MetricsLogger(out_dir, use_tb=use_tb, append=bool(resume)) if log else None
 
-    net = OthelloNet(cfg.num_blocks, cfg.channels).to(cfg.device)
-    optimizer = make_optimizer(net, cfg)
+    if resume:
+        net, optimizer, start_iter, ckpt = load_for_resume(resume, cfg, ckpt_dir)
+        if "numpy_rng_state" in ckpt:            # deterministic continuation
+            rng.bit_generator.state = ckpt["numpy_rng_state"]
+        if "torch_rng_state" in ckpt:
+            torch.set_rng_state(ckpt["torch_rng_state"].to("cpu"))
+    else:
+        net = OthelloNet(cfg.num_blocks, cfg.channels).to(cfg.device)
+        optimizer = make_optimizer(net, cfg)
+        start_iter = 0
     buffer = ReplayBuffer(cfg.buffer_size)
     history = []
 
     try:
-        for it in range(1, cfg.iterations + 1):
+        for it in range(start_iter + 1, start_iter + 1 + cfg.iterations):
             # --- self-play ---
             net.eval()
             evaluator = Evaluator(net, cfg.device)
@@ -160,7 +254,12 @@ def train(cfg, out_dir=DATA_DIR, eval_every=1, log=True, use_tb=False, verbose=T
             if logger:
                 logger.log(it, flat_metrics(loss, len(buffer), games_per_sec,
                                             sp["avg_game_len"], evals))
-            save_checkpoint(net, cfg, it, row, os.path.join(ckpt_dir, f"iter{it:04d}.pt"))
+            save_checkpoint(net, cfg, it, row, os.path.join(ckpt_dir, f"iter{it:04d}.pt"),
+                            optimizer=optimizer, rng=rng)
+            # A stable name for the newest checkpoint, so `--resume` and
+            # load-to-play don't need to know the iteration number.
+            save_checkpoint(net, cfg, it, row, os.path.join(ckpt_dir, "latest.pt"),
+                            optimizer=optimizer, rng=rng)
 
             if verbose:
                 wr = (" | " + " ".join(f"d{d}:{w:.0%}" for d, w in evals["winrate"].items())
@@ -180,12 +279,19 @@ def main():
     ap.add_argument("--tiny", action="store_true", help="tiny CPU config (smoke run)")
     ap.add_argument("--kaggle", action="store_true", help="modest GPU config (first Kaggle run)")
     ap.add_argument("--iterations", type=int, default=None)
-    ap.add_argument("--eval-every", type=int, default=1)
+    ap.add_argument("--eval-every", type=int, default=None,
+                    help="run the minimax-ladder eval every N iterations (0 = never). "
+                         "Default: from the config (kaggle=0/off, others=1). Eval is "
+                         "inspection-only — it never affects what the net learns.")
     ap.add_argument("--workers", type=int, default=None,
                     help="self-play worker processes (default from config; set to #CPU cores)")
     ap.add_argument("--device", default=None, help="override device (cuda/cpu/auto)")
     ap.add_argument("--tensorboard", action="store_true",
                     help="also log to TensorBoard (needs a compatible protobuf)")
+    ap.add_argument("--resume", default=None, metavar="CKPT",
+                    help="continue from a checkpoint: a path, or 'auto'/'latest' for "
+                         "the newest in <out>/checkpoints. --iterations is then how "
+                         "many MORE iterations to run.")
     ap.add_argument("--out", default=DATA_DIR)
     args = ap.parse_args()
 
@@ -201,9 +307,13 @@ def main():
         cfg.selfplay_workers = args.workers
     if args.device:
         cfg.device = args.device
-    print(f"Training: {name} config, {cfg.iterations} iterations, "
-          f"device={resolve_device(cfg.device)}")
-    train(cfg, out_dir=args.out, eval_every=args.eval_every, use_tb=args.tensorboard)
+    if args.eval_every is not None:
+        cfg.eval_every = args.eval_every
+    verb = "more iterations (resume)" if args.resume else "iterations"
+    eval_note = "eval off" if cfg.eval_every == 0 else f"eval every {cfg.eval_every}"
+    print(f"Training: {name} config, {cfg.iterations} {verb}, "
+          f"device={resolve_device(cfg.device)}, {eval_note}")
+    train(cfg, out_dir=args.out, use_tb=args.tensorboard, resume=args.resume)
 
 
 if __name__ == "__main__":
