@@ -59,17 +59,33 @@ runnable artifact. See `README.md` for structure.
   **No long GPU run yet; resume/load-to-play still unwired.**
 
 ## Next steps (in likely order)
-1. **Self-play throughput — DONE for now (array-ops + multi-core).** 2.1 g/s single-process on a
-   T4, ~3.4× more across 4 cores → usable for a real run. **Next concrete action: re-smoke
-   `--kaggle`** (now array-ops + 4 workers, `run/KAGGLE.md` cell 3a) for the combined g/s. The
-   remaining bigger lever is item 3, optional.
-2. **Checkpoint resume + load-to-play + metrics dashboard** (user asked for all three; paused for
-   throughput, now the priority). `train_loop.train` starts fresh — add `--resume <ckpt>` (load
-   `state_dict`) so training continues across Kaggle sessions / weekly quota; **without it each new
-   session restarts from scratch, so a real multi-session run isn't safe yet.** Wire "load
-   checkpoint → az_player" into `play_cli`/`backend` so the trained bot can be watched/played. And
-   a **metrics dashboard** that plots `data/metrics.jsonl` directly (the plan's pillar C; TensorBoard
-   is the intended-but-broken viewer here — read the jsonl instead, don't fight tb).
+
+> **▶ CURRENT PRIORITY (decided by the user 2026-07-19): item 2 — resume + dashboard + a real
+> training run.** Throughput is "good enough" (2.1 g/s); the goal now is an actual trained bot to
+> watch/play. Do NOT start the GPU port (item 3) — the user explicitly deferred it.
+
+1. **Self-play throughput — DONE.** Best GPU config is **single-process array-ops, ~2.1 g/s on a T4**
+   (~5× the 0.4 baseline). `kaggle` config = array-ops, `selfplay_workers=1`. **On a GPU keep
+   workers=1** — >1 is slower (shared-GPU serialization, see the status bullet). A 30-iter run is
+   ~45 min. The only bigger lever left is item 3 (deferred).
+2. **▶ Checkpoint resume + load-to-play + metrics dashboard + a real run.** Concrete hooks:
+   - **`--resume <ckpt.pt>`** — `train_loop.train` builds a fresh `OthelloNet` (~line 128). Instead:
+     `torch.load` the checkpoint (already stores `state_dict` + `config` + `iteration` via
+     `save_checkpoint`), build `OthelloNet(cfg.num_blocks, cfg.channels)`, `load_state_dict`, continue
+     from `iteration+1` (fix checkpoint naming to not overwrite). To resume the optimizer too, also
+     save `optimizer.state_dict()` in `save_checkpoint` and restore it. NOTE: the replay buffer is NOT
+     checkpointed → a resumed run starts with an empty buffer and refills over ~1–2 iters (acceptable).
+     **This unblocks multi-session Kaggle runs — without it each session restarts from scratch.**
+   - **Load-to-play** — build an `Evaluator` from a loaded checkpoint and feed `az_player(evaluator,
+     sims)` (in `az/evaluate.py`) as a bot into `run/play_cli.py` (add a `--black az:<ckpt>` option)
+     and `serve/backend.py` (a bot choice). Lets the user actually watch/play the trained net.
+   - **Metrics dashboard** — plot `data/metrics.jsonl` (one JSON/iter: `loss/*`, `buffer_size`,
+     `selfplay_games_per_sec`, `winrate/minimax_d*`, `max_depth_beaten`). Simplest: a self-contained
+     HTML that reads the jsonl + draws line charts, or a matplotlib script → PNGs, or a route in
+     `serve/backend.py`. **Skip TensorBoard — it's protobuf-broken here (don't fight it).**
+   - **Then the real run** — `python run/train_loop.py --kaggle` on Kaggle (workers=1); download the
+     latest `data/checkpoints/iter####.pt` each session and `--resume` it next session; watch
+     `max_depth_beaten` climb toward depth-4. This is the payoff of all the throughput work.
 3. **(Optional, big) Port the batched engine + MCTS to Torch-CUDA tensors.** The array-ops search is
    NumPy = CPU; moving it to Torch tensors on `cuda` is the only path to use the idle GPU (~27%) and
    scale with batch size. **What is/isn't the bottleneck (know this):** the *game play* (self-play) is
