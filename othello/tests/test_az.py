@@ -282,10 +282,37 @@ def test_train_loop_end_to_end():
     check("losses are finite", all(np.isfinite(r["loss"]["total"]) for r in hist))
     check("buffer grew across iterations", hist[1]["buffer"] > hist[0]["buffer"])
     check("ladder eval ran (max_depth_beaten present)", "max_depth_beaten" in hist[1])
-    check("checkpoints written",
-          len([f for f in os.listdir(os.path.join(out, "checkpoints")) if f.endswith(".pt")]) == 2)
+    ckpts = os.listdir(os.path.join(out, "checkpoints"))
+    check("numbered checkpoints written (one per iteration)",
+          len([f for f in ckpts if f.startswith("iter") and f.endswith(".pt")]) == 2)
+    check("latest.pt convenience checkpoint written", "latest.pt" in ckpts)
     check("game records written",
           len([f for f in os.listdir(os.path.join(out, "game_records")) if f.endswith(".json")]) > 0)
+
+
+def test_resume_continues_training():
+    """A --resume run picks up the iteration counter and reloads the weights."""
+    from train_loop import train, load_for_resume
+    out = tempfile.mkdtemp(prefix="az_resume_")
+    cfg = Config.tiny(iterations=2)
+    train(cfg, out_dir=out, eval_every=2, log=True, verbose=False)
+
+    ckpt_dir = os.path.join(out, "checkpoints")
+    # 'auto' resolves to the newest checkpoint and reloads its weights exactly.
+    net, opt, start_iter, ckpt = load_for_resume("auto", Config.tiny(iterations=1), ckpt_dir)
+    check("resume resolves to the last iteration", start_iter == 2)
+    saved = torch.load(os.path.join(ckpt_dir, "iter0002.pt"), map_location="cpu")
+    same = all(torch.equal(net.state_dict()[k].cpu(), v)
+               for k, v in saved["state_dict"].items())
+    check("resumed weights match the checkpoint", same)
+    check("optimizer state restored", "optimizer" in ckpt)
+
+    # Running with resume continues the numbering (iter 3), appending to the log.
+    train(Config.tiny(iterations=1), out_dir=out, eval_every=2, log=True,
+          verbose=False, resume="auto")
+    iters = sorted(int(f[4:-3]) for f in os.listdir(ckpt_dir)
+                   if f.startswith("iter") and f.endswith(".pt"))
+    check("resume continued to iteration 3", iters == [1, 2, 3])
 
 
 FAST = [test_network_and_evaluator, test_mcts_basic, test_replay_buffer,
@@ -293,7 +320,7 @@ FAST = [test_network_and_evaluator, test_mcts_basic, test_replay_buffer,
         test_batched_selfplay_matches_serial, test_arrayops_selfplay_matches_serial_greedy,
         test_overfit_tiny]
 SLOW = [test_parallel_selfplay_matches_inprocess, test_arrayops_parallel_matches_inprocess,
-        test_train_loop_end_to_end]
+        test_train_loop_end_to_end, test_resume_continues_training]
 
 if __name__ == "__main__":
     run(FAST, SLOW, "az")

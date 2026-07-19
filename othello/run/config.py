@@ -50,6 +50,12 @@ class Config:
     weight_decay: float = 1e-4
 
     # Evaluation / ladder
+    eval_every: int = 1           # run the minimax-ladder eval every N iterations;
+                                  # 0 = never (eval is inspection-only, not training —
+                                  # it never touches the replay buffer, so turning it
+                                  # off only removes the strength curve, not learning.
+                                  # Measure strength on demand instead via the web Arena
+                                  # or ladder_eval). CLI --eval-every overrides this.
     eval_games: int = 100
     eval_depths: tuple = (2, 4, 6, 8)
     promote_threshold: float = 0.55
@@ -99,6 +105,10 @@ class Config:
                                                 # (measured 2.1 g/s at w=1 vs 1.3 at w=4 on a T4).
             buffer_size=100_000,
             batch_size=256, steps_per_iter=250,
+            eval_every=0,                       # eval OFF by default: it's inspection-only
+                                                # and the slowest part of an iteration.
+                                                # Measure strength on demand (web Arena /
+                                                # `--eval-every N`). Kept knobs for when it's on:
             eval_games=20, eval_depths=(1, 2, 4),
             iterations=30,
             device="cuda",

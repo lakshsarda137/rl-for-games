@@ -63,29 +63,58 @@ runnable artifact. See `README.md` for structure.
 > **▶ CURRENT PRIORITY (decided by the user 2026-07-19): item 2 — resume + dashboard + a real
 > training run.** Throughput is "good enough" (2.1 g/s); the goal now is an actual trained bot to
 > watch/play. Do NOT start the GPU port (item 3) — the user explicitly deferred it.
+>
+> **UPDATE (2026-07-19): resume ✅, dashboard ✅, web load-to-play ✅, on-demand Arena eval ✅, and
+> a Kaggle→local pull pipeline ✅ are BUILT** (see item 2). **In-training eval is now OFF by default**
+> (kaggle `eval_every=0`) — it was inspection-only; strength is measured on demand via the web Arena.
+> The only thing still open in item 2 is **the real multi-session Kaggle run** (the payoff).
 
 1. **Self-play throughput — DONE.** Best GPU config is **single-process array-ops, ~2.1 g/s on a T4**
    (~5× the 0.4 baseline). `kaggle` config = array-ops, `selfplay_workers=1`. **On a GPU keep
    workers=1** — >1 is slower (shared-GPU serialization, see the status bullet). A 30-iter run is
    ~45 min. The only bigger lever left is item 3 (deferred).
-2. **▶ Checkpoint resume + load-to-play + metrics dashboard + a real run.** Concrete hooks:
-   - **`--resume <ckpt.pt>`** — `train_loop.train` builds a fresh `OthelloNet` (~line 128). Instead:
-     `torch.load` the checkpoint (already stores `state_dict` + `config` + `iteration` via
-     `save_checkpoint`), build `OthelloNet(cfg.num_blocks, cfg.channels)`, `load_state_dict`, continue
-     from `iteration+1` (fix checkpoint naming to not overwrite). To resume the optimizer too, also
-     save `optimizer.state_dict()` in `save_checkpoint` and restore it. NOTE: the replay buffer is NOT
-     checkpointed → a resumed run starts with an empty buffer and refills over ~1–2 iters (acceptable).
-     **This unblocks multi-session Kaggle runs — without it each session restarts from scratch.**
-   - **Load-to-play** — build an `Evaluator` from a loaded checkpoint and feed `az_player(evaluator,
-     sims)` (in `az/evaluate.py`) as a bot into `run/play_cli.py` (add a `--black az:<ckpt>` option)
-     and `serve/backend.py` (a bot choice). Lets the user actually watch/play the trained net.
-   - **Metrics dashboard** — plot `data/metrics.jsonl` (one JSON/iter: `loss/*`, `buffer_size`,
-     `selfplay_games_per_sec`, `winrate/minimax_d*`, `max_depth_beaten`). Simplest: a self-contained
-     HTML that reads the jsonl + draws line charts, or a matplotlib script → PNGs, or a route in
-     `serve/backend.py`. **Skip TensorBoard — it's protobuf-broken here (don't fight it).**
-   - **Then the real run** — `python run/train_loop.py --kaggle` on Kaggle (workers=1); download the
-     latest `data/checkpoints/iter####.pt` each session and `--resume` it next session; watch
-     `max_depth_beaten` climb toward depth-4. This is the payoff of all the throughput work.
+2. **Checkpoint resume + load-to-play + metrics dashboard + a real run.** Status of each hook:
+   - **`--resume` ✅ DONE.** `train_loop.py`: `save_checkpoint` now also stores `optimizer.state_dict()`
+     + numpy/torch RNG state; `load_for_resume(path, cfg, ckpt_dir)` accepts a path OR `"auto"`/`"latest"`
+     (newest `iterNNNN.pt`), rebuilds `OthelloNet` from the *checkpoint's* architecture, restores
+     weights + optimizer + RNG, and `train()` continues numbering from `iteration+1` (so `--iterations N`
+     = N *more* iters; metrics.jsonl + checkpoints stay on one timeline). A rolling `latest.pt` is written
+     each iter for convenience. Replay buffer is NOT checkpointed (refills over 1–2 iters, as planned).
+     Covered by `test_resume_continues_training` (SLOW). **This unblocks multi-session Kaggle runs.**
+   - **Metrics dashboard ✅ DONE.** ONE template `serve/frontend/dashboard.html` (theme-aware, vanilla
+     inline-SVG line charts, no external libs), driven two ways: **static** via `run/dashboard.py`
+     (embeds the jsonl into a standalone `data/dashboard.html` — works offline, ideal for a downloaded
+     Kaggle run) and **live** via `serve/backend.py` routes `/dashboard` + `/api/metrics` (auto-refresh
+     15s). Charts, each with a plain-English "what it measures / what good looks like": `max_depth_beaten`
+     (headline staircase), win-rate vs each minimax depth (with the 55% promotion line), loss
+     (total/policy/value), self-play g/s, buffer size, avg game length + an accessible data table.
+     Palette is the validated dataviz default. **TensorBoard stays skipped (protobuf-broken here).**
+   - **Load-to-play (web UI) ✅ DONE.** `serve/backend.py` loads the latest checkpoint
+     (`latest_checkpoint()` → prefer `latest.pt`, else newest `iterNNNN.pt`; `load_az_evaluator`
+     builds the net from the checkpoint's own num_blocks/channels, cached by file mtime so a
+     running server auto-picks-up fresher weights during training) and exposes it as the **`az`**
+     / **`az:<sims>`** player spec (via `az_player` from `az/evaluate.py`). `/api/config` reports
+     `az_available` + `az_iteration`; the play UI (`serve/frontend/index.html`) shows "AZ net (iter N)"
+     as a pickable player for either side (param = MCTS sims/move), so you can pair the trained net
+     vs human/greedy/minimax/edax. Play ↔ dashboard are cross-linked. **Still optional:** a
+     `run/play_cli.py --black az:<ckpt>` terminal option (same `az_player`; not requested yet).
+   - **On-demand Arena eval ✅ DONE.** In-training minimax eval is now OFF by default
+     (`Config.eval_every`, kaggle=0; `--eval-every N` overrides; train() reads cfg when the arg is
+     None). Replaced by the web **Arena**: `POST /api/arena {opponent, games, az_sims}` runs an
+     N-game colour-alternated match (AZ vs the chosen bot) in a **background thread**, `GET
+     /api/arena/{id}` polls progress; the play UI shows a live tally + final win rate. Reuses
+     `simple.play_game` + `_random_opening`. This is the accurate aggregate strength read the user
+     wanted (vs one-off browser games), on demand instead of every iteration.
+   - **Kaggle→local pull pipeline ✅ DONE.** `run/pull_kaggle.py` shells out to the `kaggle` CLI
+     (`kernels output` for a committed notebook, or `datasets download`), finds the newest
+     checkpoint (`latest.pt`/highest `iterNNNN.pt`) + `metrics.jsonl` in the download, and installs
+     them into local `data/` so the port-8000 app renders the Kaggle-trained model + dashboard.
+     `--watch SECS` polls. The file-locate/install logic is unit-tested; the CLI download step needs
+     the user's Kaggle token (can't be tested here). See `run/KAGGLE.md`.
+   - **Then the real run — STILL OPEN.** `python run/train_loop.py --kaggle` on Kaggle (workers=1);
+     download the latest `data/checkpoints/latest.pt` (or `iter####.pt`) each session and
+     `--resume auto` it next session; watch `max_depth_beaten` climb toward depth-4 on the dashboard.
+     This is the payoff of all the throughput work.
 3. **(Optional, big) Port the batched engine + MCTS to Torch-CUDA tensors.** The array-ops search is
    NumPy = CPU; moving it to Torch tensors on `cuda` is the only path to use the idle GPU (~27%) and
    scale with batch size. **What is/isn't the bottleneck (know this):** the *game play* (self-play) is
@@ -140,7 +169,11 @@ These will bite you if you change code without knowing them:
   search depth, many-game matches, or deep perft in SLOW.
 - **Metrics: `data/metrics.jsonl` is the source of truth.** TensorBoard is broken
   in this environment (protobuf/tensorboard `GetPrototype` clash) so it's opt-in
-  (`--tensorboard`) and fully guarded. Don't rely on tb.
+  (`--tensorboard`) and fully guarded. Don't rely on tb. The **dashboard**
+  (`run/dashboard.py` static, or `/dashboard` live in `serve/backend.py`) reads
+  this jsonl — both share ONE template `serve/frontend/dashboard.html`. If you add
+  a metric, add it in `flat_metrics` (train_loop.py) AND as a chart/table column in
+  that template (the JS keys off the exact `loss/*`, `winrate/minimax_d*`, etc. names).
 - **Deep minimax is slow** (pure Python; d6 ≈ 9s/move). Interactive but not snappy;
   the batched engine is the eventual fix. Bot moves in the web backend run in a
   threadpool so they don't block the server.

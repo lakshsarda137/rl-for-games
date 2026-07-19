@@ -20,13 +20,59 @@ python run/play_cli.py --black human --white minimax:3
 python run/play_cli.py --black minimax:4 --white edax:4 --delay 0.4   # watch two bots
 
 # Web app (board in the browser) -> http://127.0.0.1:8000
-python serve/backend.py
+python serve/backend.py            # play the trained "AZ net" vs any bot / yourself;
+                                   # also serves the live dashboard at /dashboard
 
 # Train the AlphaZero agent (tiny CPU smoke run)
 python run/train_loop.py --tiny
+python run/train_loop.py --kaggle --resume auto   # continue the newest checkpoint
+
+# See how training is going (annotated charts from data/metrics.jsonl)
+python run/dashboard.py            # -> data/dashboard.html, opens in your browser
 ```
 
 Training on a free Kaggle GPU: see [`run/KAGGLE.md`](run/KAGGLE.md).
+
+## Playing / measuring the trained net
+
+Start the web app (`python serve/backend.py`) and pick **"AZ net"** for either
+side to play the latest trained checkpoint against yourself or any bot. The
+**Arena** panel there runs an N-game, colour-alternated match of the net vs a bot
+of your choice and reports aggregate win/draw/loss + win rate — a far more reliable
+strength read than a single game. (In-training minimax eval is inspection-only and
+**off by default** in the Kaggle config; the Arena is the on-demand replacement.)
+
+To play a model trained on Kaggle locally, pull it down first with
+`python run/pull_kaggle.py --kernel <user>/<slug>` (see `run/KAGGLE.md`).
+
+## Watching training progress
+
+Every training iteration appends one JSON line to `data/metrics.jsonl` (loss,
+self-play speed, replay-buffer size, win rates, `max_depth_beaten`). Two ways to
+read it, both drawing the same annotated charts — each one explains in plain
+English what it measures and what "improving" looks like:
+
+- **Static** — `python run/dashboard.py` builds a self-contained `data/dashboard.html`
+  (data embedded, no server). Ideal for a downloaded Kaggle run: grab `metrics.jsonl`
+  and build the page locally.
+- **Live** — start the web app (`python serve/backend.py`) and open
+  <http://127.0.0.1:8000/dashboard>; it reads the jsonl through `/api/metrics` and
+  auto-refreshes every 15s while training runs.
+
+## Resuming training across sessions
+
+Checkpoints (`data/checkpoints/iterNNNN.pt`, plus a rolling `latest.pt`) store the
+weights, optimizer state, and RNG state. Continue an interrupted run with:
+
+```bash
+python run/train_loop.py --kaggle --resume auto             # newest checkpoint
+python run/train_loop.py --kaggle --resume data/checkpoints/iter0030.pt
+```
+
+Iteration numbering and `metrics.jsonl` continue on one timeline, so `--iterations N`
+means "run N *more* iterations". (The replay buffer isn't checkpointed — it refills
+over the first 1-2 iterations.) This is what makes multi-session Kaggle runs work:
+download the latest checkpoint each session and `--resume` it the next.
 
 ## Repository layout
 
@@ -54,11 +100,15 @@ othello/
 ├── run/                    # orchestration + entrypoints
 │   ├── config.py           #   all hyperparameters: Config (full) / Config.tiny() / Config.kaggle()
 │   ├── play_cli.py         #   terminal viewer: watch bots or play one yourself
-│   ├── train_loop.py       #   top-level loop; device auto-detect; --tiny/--kaggle
+│   ├── train_loop.py       #   top-level loop; device auto-detect; --tiny/--kaggle; --resume
+│   ├── dashboard.py        #   build a standalone HTML dashboard from data/metrics.jsonl
+│   ├── pull_kaggle.py      #   pull a Kaggle run's checkpoint + metrics into local data/
 │   └── KAGGLE.md           #   how to train on a free Kaggle GPU
 ├── serve/                  # the web app (local, single-user)
-│   ├── backend.py          #   FastAPI: /api/new, /api/move, /api/bot_move
-│   └── frontend/index.html #   self-contained board UI (play any bot / watch bots)
+│   ├── backend.py          #   FastAPI: /api/new, /api/move, /api/bot_move; /dashboard, /api/metrics
+│   └── frontend/
+│       ├── index.html      #   self-contained board UI (play any bot / watch bots)
+│       └── dashboard.html  #   annotated training-metrics charts (live or static)
 ├── tests/                  # tiered test suites (fast default, --full heavy)
 │   ├── harness.py          #   check() + the fast/full runner
 │   └── test_*.py           #   engine parity/perft, encode, symmetry, minimax, edax, az pipeline

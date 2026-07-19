@@ -43,27 +43,72 @@ Torch-CUDA port of the search, not more CPU workers.)
 
 **Cell 3b — the real run** (5x64 net, ~30 iterations; finishes within a session
 and should climb the minimax ladder toward depth-4). Run this only after the
-smoke number looks good — and note that without `--resume` a session timeout
-loses progress, so a long multi-session run should wait until resume is wired.
+smoke number looks good.
 ```python
 !python run/train_loop.py --kaggle --out /kaggle/working/az_data
 ```
+To run *longer than one session*, resume from the previous session's checkpoint
+(see "Resuming across sessions" below):
+```python
+!python run/train_loop.py --kaggle --resume auto --out /kaggle/working/az_data
+```
 
-Progress prints per iteration: total/policy/value loss, buffer size, games/sec,
-and (when eval runs) win rates vs minimax + `max_depth_beaten` — the headline
-strength number.
+Progress prints per iteration: total/policy/value loss, buffer size, games/sec.
+
+**Evaluation is OFF by default** in the `--kaggle` config (`eval_every=0`). The
+minimax-ladder eval is inspection-only — it never affects what the net learns —
+and it's the slowest part of an iteration, so training runs faster without it.
+Measure strength on demand instead (the web **Arena**, below). To turn it back on
+for a strength curve, add `--eval-every 5` (every 5th iteration) or `--eval-every 1`.
 
 ## Getting your results back
 Everything is written under `/kaggle/working/az_data/`:
-- `checkpoints/iter####.pt` — the model each iteration (weights + config + metrics)
-- `metrics.jsonl` — the training/strength curves (one JSON line per iteration)
+- `checkpoints/iter####.pt` + `latest.pt` — the model (weights + optimizer + config)
+- `metrics.jsonl` — the training curves (one JSON line per iteration)
 - `game_records/*.json` — self-play games (for the web spectator later)
 
-After the run, the **Output** tab lists these for download. To resume next
-session: download the latest checkpoint. A `--resume <ckpt>` loader is **not
-wired yet** — until it is, a new session starts a fresh net, so don't rely on a
-long run surviving a timeout. (This is the next thing to build before the real
-multi-session run.)
+After the run, the **Output** tab lists these for download.
+
+### Straight into your local web app (the pipeline)
+To play/inspect the Kaggle-trained model in your **local** app at
+<http://127.0.0.1:8000>, pull its `latest.pt` + `metrics.jsonl` into local `data/`
+with the Kaggle API (needs `pip install kaggle` + an API token, and the notebook
+**committed** via *Save & Run All* so its output is fetchable):
+
+```bash
+python run/pull_kaggle.py --kernel <username>/<kernel-slug>          # one-shot
+python run/pull_kaggle.py --kernel <username>/<kernel-slug> --watch 300   # poll every 5 min
+```
+
+It drops the newest checkpoint at `data/checkpoints/latest.pt` and metrics at
+`data/metrics.jsonl`. Then start `python serve/backend.py` — the play UI picks up
+the new weights on the next New Game, and `/dashboard` shows the curves. (If you
+version outputs as a Kaggle Dataset instead of a committed kernel, use
+`--dataset <username>/<slug>`.)
+
+## Resuming across sessions
+
+A Kaggle session is wiped when it ends, so a multi-session run has to carry the
+checkpoint across. The `.pt` file holds everything needed — weights, optimizer
+state, RNG state, config, and the iteration number — so resuming is seamless.
+
+1. **End of session:** download `checkpoints/latest.pt` from the **Output** tab
+   (or add `/kaggle/working/az_data` as a notebook output / a Kaggle Dataset).
+2. **Next session:** make that file available again — the simplest is to attach
+   it as an **input dataset** (right sidebar → *Add Input*), which mounts it under
+   `/kaggle/input/<your-dataset>/`. Copy it into place and resume:
+   ```python
+   !mkdir -p /kaggle/working/az_data/checkpoints
+   !cp /kaggle/input/<your-dataset>/latest.pt /kaggle/working/az_data/checkpoints/
+   !python run/train_loop.py --kaggle --resume auto --out /kaggle/working/az_data
+   ```
+   `--resume auto` picks the newest checkpoint in that dir; or point at it
+   explicitly with `--resume /kaggle/working/az_data/checkpoints/latest.pt`.
+
+`--iterations N` means **N more** iterations when resuming, and the iteration
+counter + `metrics.jsonl` continue on one timeline. (The replay buffer isn't
+saved — it refills over the first 1–2 iterations, which is fine.) So each session
+adds ~30 iterations on top of the last, and the strength curve keeps climbing.
 
 ## Notes
 - **No `pip install` needed** — Kaggle images ship torch + numpy. (Edax, FastAPI,

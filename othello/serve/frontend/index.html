@@ -95,7 +95,8 @@
 </head>
 <body>
   <h1>Othello</h1>
-  <div class="sub">Play a bot, or watch two bots. Minimax at any depth · Edax (if installed) · random · greedy.</div>
+  <div class="sub">Play a bot, or watch two bots. AZ trained net · Minimax at any depth · Edax (if installed) · random · greedy.
+    &nbsp;·&nbsp; <a href="/dashboard">📊 Training dashboard</a></div>
 
   <div class="layout">
     <div class="board" id="board" role="grid" aria-label="Othello board, 8 by 8"></div>
@@ -136,6 +137,23 @@
         </div>
       </fieldset>
 
+      <fieldset id="arenaBox" hidden>
+        <legend>Arena — AZ net vs opponent (aggregate over N games)</legend>
+        <div class="row">
+          <label for="arenaOpp">Opp</label>
+          <select id="arenaOpp" aria-label="Arena opponent"></select>
+          <input type="number" id="arenaParam" value="2" aria-label="Opponent difficulty">
+        </div>
+        <div class="row">
+          <label for="arenaSims" title="MCTS simulations per move — higher = stronger, slower">Sims</label>
+          <input type="number" id="arenaSims" min="10" max="1000" value="80" aria-label="AZ sims per move">
+          <label for="arenaGames" style="width:auto">Games</label>
+          <input type="number" id="arenaGames" min="1" max="200" value="20" aria-label="Number of games">
+        </div>
+        <button class="ghost" id="arenaBtn" style="width:100%;margin-top:2px">Run match</button>
+        <div class="hint" id="arenaOut" style="margin-top:8px" aria-live="polite"></div>
+      </fieldset>
+
       <div class="hint" id="edaxHint"></div>
     </div>
   </div>
@@ -146,9 +164,13 @@ const BLACK = 1, WHITE = -1, PASS = 64;
 let gameId = null, state = null, paused = false, busy = false, config = {};
 
 // ---- build player selects ----
+function azLabel() {
+  return config.az_iteration != null ? `AZ net (iter ${config.az_iteration})` : "AZ net (trained)";
+}
 function playerOptions() {
   const opts = [["human","Human"],["minimax","Minimax"],["random","Random"],["greedy","Greedy"]];
-  if (config.edax_available) opts.splice(2, 0, ["edax","Edax"]);
+  if (config.az_available) opts.splice(1, 0, ["az", azLabel()]);   // the trained net, right after Human
+  if (config.edax_available) opts.splice(config.az_available ? 3 : 2, 0, ["edax","Edax"]);
   return opts;
 }
 function fillSelect(sel, chosen) {
@@ -159,17 +181,25 @@ function fillSelect(sel, chosen) {
     sel.appendChild(o);
   }
 }
-function needsParam(type) { return type === "minimax" || type === "edax"; }
+function needsParam(type) { return type === "minimax" || type === "edax" || type === "az"; }
 function syncParam(typeSel, paramInput) {
   const t = typeSel.value;
   paramInput.style.display = needsParam(t) ? "" : "none";
-  if (t === "minimax") { paramInput.max = config.max_minimax_depth || 8; if (+paramInput.value > paramInput.max) paramInput.value = 4; }
-  if (t === "edax") { paramInput.max = config.max_edax_level || 30; }
+  paramInput.title = t === "az" ? "MCTS simulations per move — higher = stronger but slower"
+    : t === "minimax" ? "search depth" : t === "edax" ? "Edax level" : "";
+  if (t === "minimax") { paramInput.min = 1; paramInput.max = config.max_minimax_depth || 8; if (+paramInput.value > paramInput.max) paramInput.value = 4; }
+  if (t === "edax") { paramInput.min = 0; paramInput.max = config.max_edax_level || 30; }
+  if (t === "az") {
+    paramInput.min = config.min_az_sims || 10; paramInput.max = config.max_az_sims || 1000;
+    if (+paramInput.value < paramInput.min || +paramInput.value > paramInput.max)
+      paramInput.value = config.default_az_sims || 120;
+  }
 }
 function specOf(typeSel, paramInput) {
   const t = typeSel.value;
   if (t === "minimax") return "minimax:" + paramInput.value;
   if (t === "edax") return "edax:" + paramInput.value;
+  if (t === "az") return "az:" + paramInput.value;
   return t;
 }
 
@@ -275,6 +305,58 @@ for (const side of ["black","white"]) {
   $(side+"Type").addEventListener("change", () => syncParam($(side+"Type"), $(side+"Param")));
 }
 
+// ---- arena (aggregate N-game match: AZ net vs a bot) ----
+function arenaOppOptions() {                       // bots only — no human, no az
+  return playerOptions().filter(([v]) => v !== "human" && v !== "az");
+}
+function fillArenaOpp() {
+  const sel = $("arenaOpp"); sel.innerHTML = "";
+  for (const [val, label] of arenaOppOptions()) {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label; if (val === "minimax") o.selected = true;
+    sel.appendChild(o);
+  }
+  syncArenaParam();
+}
+function syncArenaParam() {
+  const t = $("arenaOpp").value, p = $("arenaParam");
+  const need = t === "minimax" || t === "edax";
+  p.style.display = need ? "" : "none";
+  if (t === "minimax") { p.min = 1; p.max = config.max_minimax_depth || 8; if (+p.value > p.max) p.value = 2; }
+  if (t === "edax") { p.min = 0; p.max = config.max_edax_level || 30; }
+}
+function arenaOppSpec() {
+  const t = $("arenaOpp").value, p = $("arenaParam").value;
+  if (t === "minimax") return "minimax:" + p;
+  if (t === "edax") return "edax:" + p;
+  return t;
+}
+function fmtArena(j) {
+  const tally = `AZ ${j.wins}W ${j.losses}L ${j.draws}D`;
+  const wr = (j.win_rate * 100).toFixed(0) + "%";
+  if (j.error) return "Error: " + j.error;
+  return j.done
+    ? `Result vs ${j.opponent}: ${tally} over ${j.played} games — win rate ${wr}`
+    : `Playing ${j.played}/${j.total}… ${tally} (${wr})`;
+}
+let arenaTimer = null;
+async function startArena() {
+  clearInterval(arenaTimer);
+  $("arenaBtn").disabled = true; $("arenaOut").textContent = "Starting…";
+  try {
+    const job = await api("/api/arena", {
+      opponent: arenaOppSpec(), games: +$("arenaGames").value, az_sims: +$("arenaSims").value });
+    arenaTimer = setInterval(async () => {
+      const r = await fetch("/api/arena/" + job.job_id);
+      if (!r.ok) { clearInterval(arenaTimer); $("arenaBtn").disabled = false;
+        $("arenaOut").textContent = "Arena job expired."; return; }
+      const j = await r.json();
+      $("arenaOut").textContent = fmtArena(j);
+      if (j.done) { clearInterval(arenaTimer); $("arenaBtn").disabled = false; }
+    }, 600);
+  } catch (e) { $("arenaBtn").disabled = false; $("arenaOut").textContent = "Could not start: " + e.message; }
+}
+
 // ---- init ----
 (async function init() {
   buildBoard();
@@ -283,9 +365,21 @@ for (const side of ["black","white"]) {
   fillSelect($("whiteType"), "minimax");
   syncParam($("blackType"), $("blackParam"));
   syncParam($("whiteType"), $("whiteParam"));
-  $("edaxHint").innerHTML = config.edax_available
+  if (config.az_available) {
+    $("arenaBox").hidden = false;
+    $("arenaSims").value = config.default_az_sims ? Math.min(80, config.default_az_sims) : 80;
+    fillArenaOpp();
+    $("arenaOpp").addEventListener("change", syncArenaParam);
+    $("arenaBtn").addEventListener("click", startArena);
+  }
+  const hints = [];
+  hints.push(config.az_available
+    ? `AZ net loaded (checkpoint iter ${config.az_iteration ?? "?"}) — pick "AZ net" for either side; the number is MCTS sims/move (higher = stronger, slower).`
+    : "No trained model yet — run training (python run/train_loop.py) to play the AZ net here.");
+  hints.push(config.edax_available
     ? "Edax is installed — try White = Edax. Even level 1–2 is very strong."
-    : "Edax not installed (optional). See opponents/EDAX_SETUP.md to enable it.";
+    : "Edax not installed (optional). See opponents/EDAX_SETUP.md to enable it.");
+  $("edaxHint").innerHTML = hints.join("<br>");
 })();
 </script>
 </body>
