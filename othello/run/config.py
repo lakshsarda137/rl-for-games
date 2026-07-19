@@ -34,10 +34,11 @@ class Config:
                                      # game batch is searched with array ops, killing the
                                      # per-game Python overhead that is ~87% of self-play
                                      # time. The big throughput lever. False = coroutine pool.
-    selfplay_workers: int = 1        # self-play worker PROCESSES. >1 spreads self-play over
-                                     # that many CPU cores (~cores× on top, bounded by core
-                                     # count). Composes with array-ops (each worker vectorises
-                                     # its own sub-batch). 1 = single process. Set to ~#CPU cores.
+    selfplay_workers: int = 1        # self-play worker PROCESSES. >1 spreads self-play over that
+                                     # many CPU cores — but ONLY helps a CPU-ONLY run. On a GPU the
+                                     # workers all share one device and contend (net eval serialises
+                                     # across processes), so >1 is SLOWER there (2.1→1.3 g/s on a T4).
+                                     # Keep 1 on GPU; raise only when device='cpu'.
 
     # Replay buffer
     buffer_size: int = 200_000
@@ -94,7 +95,8 @@ class Config:
             sims_selfplay=96, sims_eval=128,
             games_per_iter=96, temp_moves=12,
             selfplay_arrayops=True,             # array-ops self-play (batched engine + MCTS)
-            selfplay_workers=4,                 # ...spread over ~4 Kaggle vCPUs (--workers to tune)
+            selfplay_workers=1,                 # 1 on GPU: workers>1 all share ONE GPU and CONTEND
+                                                # (measured 2.1 g/s at w=1 vs 1.3 at w=4 on a T4).
             buffer_size=100_000,
             batch_size=256, steps_per_iter=250,
             eval_games=20, eval_depths=(1, 2, 4),

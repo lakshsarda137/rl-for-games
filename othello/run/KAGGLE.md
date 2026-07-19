@@ -24,25 +24,22 @@ import torch
 print("CUDA:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 ```
 
-First, check the session's core count (set `--workers` to it):
-```python
-import os; print("CPU cores:", os.cpu_count())
-```
-
 **Cell 3a — SMOKE RUN first** (2 iterations, eval skipped so you get the
 self-play speed number fast; weights thrown away on purpose). The `--kaggle`
 config runs **array-ops** self-play (batched engine + MCTS, games searched in
-lockstep) spread across **4 worker processes** (`selfplay_workers=4`) so all CPU
-cores are used. Set `--workers` to the core count above if it isn't 4.
+lockstep) in a **single process** — on a GPU that's the fastest, because multiple
+workers would all share the one GPU and contend for it.
 ```python
-!python -u run/train_loop.py --kaggle --workers 4 --iterations 2 --eval-every 0 --out /kaggle/working/az_smoke
+!python -u run/train_loop.py --kaggle --iterations 2 --eval-every 0 --out /kaggle/working/az_smoke
 ```
 **What to look for:** the per-iteration `X.X g/s`. Baseline was **~0.4 g/s**;
-single-process array-ops already hit **2.1 g/s** on the T4, and spreading over 4
-cores added ~3× more locally, so expect **meaningfully higher** here. Compare
-with `--workers 1` to isolate the multi-core gain. (`nvidia-smi` will still show
-modest GPU use — the search math is NumPy on the CPU; the network is what's on
-the GPU. That's expected and is the known ceiling.)
+array-ops hits **~2.1 g/s** on a T4. (`nvidia-smi` will still show modest GPU use
+and a busy CPU — the search math is NumPy on the CPU; the network is what's on the
+GPU. That's the known ceiling; the only thing that lifts it is the future
+Torch-CUDA port of the search, not more CPU workers.)
+> DON'T pass `--workers >1` on a GPU: they share one device and contend, which is
+> *slower* (measured 2.1→1.3 g/s at 4 workers on a T4). Workers help only a
+> `--device cpu` run.
 
 **Cell 3b — the real run** (5x64 net, ~30 iterations; finishes within a session
 and should climb the minimax ladder toward depth-4). Run this only after the

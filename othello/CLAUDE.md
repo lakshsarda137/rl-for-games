@@ -48,8 +48,14 @@ runnable artifact. See `README.md` for structure.
   slice of the games on their own CPU core. Works over the coroutine pool (`_play_parallel`) AND,
   via **Option B**, over array-ops (`_play_batch_parallel`/`_worker_batch`). Measured 3.5× (pool)
   and **3.4× (array-ops) at 4 workers** on a 10-core Mac; byte-identical to the in-process split
-  (`test_parallel_selfplay_matches_inprocess`, `test_arrayops_parallel_matches_inprocess`). The
-  `kaggle` config = **array-ops + 4 workers**, so re-smoking `--kaggle` gives the combined g/s.
+  (`test_parallel_selfplay_matches_inprocess`, `test_arrayops_parallel_matches_inprocess`).
+  **CAUTION — workers>1 helps a CPU-ONLY run, but is SLOWER on a GPU** (measured **2.1 g/s at
+  workers=1 vs 1.3 at workers=4 on a T4**). Not a capacity problem — the GPU was ~27% util/near-empty
+  memory. It's serialization+latency: without MPS a single GPU time-slices between processes'
+  CUDA contexts (one at a time + switch cost), and self-play is latency-bound (each sim step the CPU
+  waits on a small net eval), so 4 processes just queue at the one GPU and every round-trip slows. The
+  local 3.4× was a `device=cpu` benchmark and did NOT transfer. **On GPU: one process, big batch** —
+  let the GPU's own cores parallelise inside the batch. `kaggle` config = array-ops, `selfplay_workers=1`.
   **No long GPU run yet; resume/load-to-play still unwired.**
 
 ## Next steps (in likely order)
