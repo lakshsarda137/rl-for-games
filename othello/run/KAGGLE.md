@@ -24,14 +24,28 @@ import torch
 print("CUDA:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 ```
 
-**Cell 3 — train** (modest first run: 5x64 net, ~30 iterations; finishes well
-within a session and should climb the minimax ladder toward depth-4)
+**Cell 3a — SMOKE RUN first** (validate batched self-play on the GPU: just 2
+iterations, evaluation skipped so you get the self-play speed number fast). This
+throws away its weights on purpose — the point is to confirm the batched
+architecture feeds the GPU before committing a real run.
+```python
+!python run/train_loop.py --kaggle --iterations 2 --eval-every 0 --out /kaggle/working/az_smoke
+```
+**What to look for:** the per-iteration `X.X g/s` (games/sec). The pre-batching
+baseline was ~0.5 g/s with the GPU idle at ~20%. Batched inference should be
+several times higher, and `nvidia-smi` (run `!nvidia-smi` in a cell) should show
+much higher GPU utilization during self-play. That jump *is* the validation.
+
+**Cell 3b — the real run** (5x64 net, ~30 iterations; finishes within a session
+and should climb the minimax ladder toward depth-4). Run this only after the
+smoke number looks good — and note that without `--resume` a session timeout
+loses progress, so a long multi-session run should wait until resume is wired.
 ```python
 !python run/train_loop.py --kaggle --out /kaggle/working/az_data
 ```
 
 Progress prints per iteration: total/policy/value loss, buffer size, games/sec,
-and (every iteration) win rates vs minimax + `max_depth_beaten` — the headline
+and (when eval runs) win rates vs minimax + `max_depth_beaten` — the headline
 strength number.
 
 ## Getting your results back
@@ -41,8 +55,10 @@ Everything is written under `/kaggle/working/az_data/`:
 - `game_records/*.json` — self-play games (for the web spectator later)
 
 After the run, the **Output** tab lists these for download. To resume next
-session: download the latest checkpoint, and we'll add a `--resume <ckpt>` load
-(not wired yet — say the word).
+session: download the latest checkpoint. A `--resume <ckpt>` loader is **not
+wired yet** — until it is, a new session starts a fresh net, so don't rely on a
+long run surviving a timeout. (This is the next thing to build before the real
+multi-session run.)
 
 ## Notes
 - **No `pip install` needed** — Kaggle images ship torch + numpy. (Edax, FastAPI,
@@ -52,6 +68,8 @@ session: download the latest checkpoint, and we'll add a `--resume <ckpt>` load
   your image's protobuf is compatible.
 - **Long runs:** enable **Save & Run All (Commit)** for background execution so
   training survives you closing the tab (Kaggle allows ~9–12h sessions).
-- **Scaling up:** the current bottleneck is unbatched self-play inference. The
-  next optimization is batched leaf evaluation (evaluate many games' positions in
-  one GPU call), which unlocks the full 160-sim / 200-game config.
+- **Scaling up:** batched self-play inference is now in place — self-play plays
+  `selfplay_concurrency` games at once and evaluates all their pending MCTS leaves
+  in one GPU call per step (`--kaggle` uses 96 games / 96 sims as one wave). To
+  push the GPU harder, raise `games_per_iter` **and** `selfplay_concurrency`
+  together (bigger eval batch) via a config edit; watch `selfplay_games_per_sec`.

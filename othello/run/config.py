@@ -25,6 +25,10 @@ class Config:
     games_per_iter: int = 200
     temp_moves: int = 16          # plies played at tau=1 before switching to greedy
     augment: bool = True          # expand each example into its 8 dihedral symmetries
+    selfplay_concurrency: int = 128  # games played in parallel == self-play net batch
+                                     # size. Batched inference feeds the GPU: a batch
+                                     # of N boards costs ~the same as one. Capped at
+                                     # games_per_iter; raise both to fill a bigger GPU.
 
     # Replay buffer
     buffer_size: int = 200_000
@@ -61,18 +65,21 @@ class Config:
 
     @classmethod
     def kaggle(cls, **overrides):
-        """Modest first GPU run: the real 5x64 net, sized to climb the ladder and
-        finish comfortably within one free Kaggle session.
+        """First real GPU run: the 5x64 net, sized to climb the ladder within one
+        free Kaggle session.
 
-        Deliberately below the full defaults on sims/games because self-play
-        currently evaluates one position at a time (unbatched) — the big scale-up
-        comes with batched inference. This run validates GPU training end to end
-        and should push max_depth_beaten past depth-2, toward depth-4.
+        Batched self-play inference is now in place (games_per_iter games play
+        concurrently and share one net call per step, see az/selfplay.py), so the
+        GPU is fed instead of idling. `selfplay_concurrency == games_per_iter`
+        here means the whole iteration's games run as one wave (a ~96-board eval
+        batch). This should push max_depth_beaten past depth-2, toward depth-4;
+        raise games_per_iter / sims_selfplay for a longer, stronger run.
         """
         base = cls(
             num_blocks=5, channels=64,          # the real network
-            sims_selfplay=64, sims_eval=96,
-            games_per_iter=48, temp_moves=12,
+            sims_selfplay=96, sims_eval=128,
+            games_per_iter=96, temp_moves=12,
+            selfplay_concurrency=96,            # one wave: ~96 boards per net call
             buffer_size=100_000,
             batch_size=256, steps_per_iter=250,
             eval_games=20, eval_depths=(1, 2, 4),

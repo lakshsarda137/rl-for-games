@@ -25,20 +25,26 @@ runnable artifact. See `README.md` for structure.
   `Config.kaggle()` + `run/KAGGLE.md`.
 - **First GPU run VERIFIED on Kaggle (2026-07-19)** — on a T4: `CUDA: True`, and both
   `--tiny --device cuda` and `--kaggle` run end to end on GPU (loss prints, eval works,
-  checkpoints written). **BUT the expected bottleneck is confirmed live: the CPU pins at
-  100% while the GPU sits ~20% utilized** (~0.5 games/sec). MCTS evaluates one board per
-  network call (unbatched), so the GPU is starved. **No long training run has been done —
-  batched inference must come first** (see next steps). Resume/load-to-play still unwired.
+  checkpoints written).
+- **Batched self-play inference ✅ (2026-07-19)** — the GPU-starvation fix. Self-play
+  now plays `selfplay_concurrency` games concurrently and evaluates ALL their pending
+  MCTS leaves in ONE network call per step (~16× fewer forward calls at concurrency 16,
+  measured on CPU). Verified byte-for-byte identical play vs the serial path per seed
+  (`tests/test_az.py::test_batched_selfplay_matches_serial`). **No long GPU run yet** —
+  this unblocks it; the `kaggle` config was bumped to 96 games / 96 sims (one ~96-board
+  wave per eval). Resume/load-to-play still unwired.
 
 ## Next steps (in likely order)
-1. **Batched self-play inference — DO THIS FIRST (bottleneck is proven live).** MCTS
-   evaluates ONE board per network call (`az/mcts.py` `_expand` → `Evaluator.__call__`),
-   so on GPU the CPU pins at 100% and the GPU idles ~20% — moving to Kaggle barely
-   helped. Fix: run many self-play games concurrently and evaluate all their pending
-   MCTS leaves in ONE batched network call (a GPU evals 256 boards ≈ as fast as 1).
-   This is a PyTorch restructuring of `selfplay.py`/`mcts.py` (no CUDA needed), the
-   single biggest speedup, and unlocks the full 160-sim / 200-game config. Keep the
-   tiered tests fast; verify play quality is unchanged. Only THEN do a long Kaggle run.
+1. **✅ DONE — Batched self-play inference.** `az/mcts.py` is now a coroutine
+   (`run_root_gen`) that *yields* each leaf's `(board, player)` and receives
+   `(priors, value)` via `.send()`; `az/selfplay.py::_play_pool` runs many game
+   coroutines at once and evaluates all their pending leaves via
+   `Evaluator.evaluate_batch` in ONE forward pass per step. Serial `run`/`run_root`
+   still work (they drive the same coroutine with the single-board evaluator), so
+   eval/`az_player` are unchanged. Batch size = `cfg.selfplay_concurrency` (capped at
+   `games_per_iter`). **Next: actually do the long Kaggle run** now that the GPU is fed
+   — consider raising `games_per_iter`/`selfplay_concurrency` further to fill a bigger
+   batch, and watch `selfplay_games_per_sec` in `data/metrics.jsonl` climb.
 2. **Checkpoint resume + load-to-play.** `train_loop.train` starts fresh; add
    `--resume <ckpt>` (load `state_dict`) so training continues across Kaggle sessions /
    weekly quota. Also wire "load checkpoint → az_player" into `play_cli`/`backend` so the
