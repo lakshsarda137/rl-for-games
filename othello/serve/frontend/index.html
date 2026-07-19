@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Othello</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1d24; --ink: #e8eaed; --muted: #9aa0aa;
+    --line: #2a2e37; --accent: #4a9eff; --board: #1b7a43;
+    --board-line: #0f5c31; --legal: #ffd34e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg); color: var(--ink);
+    display: flex; flex-direction: column; align-items: center; padding: 20px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .3px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .layout { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
+
+  /* ---- board ---- */
+  .board {
+    display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px;
+    background: var(--board-line); padding: 10px; border-radius: 10px;
+    width: min(88vw, 480px); aspect-ratio: 1;
+    box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  }
+  .cell {
+    background: var(--board); border: none; border-radius: 4px; padding: 0;
+    position: relative; cursor: default; display: grid; place-items: center;
+    transition: background .12s;
+  }
+  .cell.playable { cursor: pointer; }
+  .cell.playable:hover, .cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .disc {
+    width: 78%; aspect-ratio: 1; border-radius: 50%;
+    transition: transform .15s ease; transform: scale(1);
+  }
+  .disc.black { background: radial-gradient(circle at 35% 30%, #444, #050505); box-shadow: 0 2px 4px rgba(0,0,0,.5); }
+  .disc.white { background: radial-gradient(circle at 35% 30%, #fff, #c8ccd2); box-shadow: 0 2px 4px rgba(0,0,0,.4); }
+  .cell.legal::after {
+    content: ""; width: 26%; aspect-ratio: 1; border-radius: 50%;
+    background: var(--legal); opacity: .55; position: absolute;
+  }
+  .cell.last { box-shadow: inset 0 0 0 3px var(--legal); }
+
+  /* ---- panel ---- */
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px; width: 300px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .scores { display: flex; gap: 10px; }
+  .score {
+    flex: 1; text-align: center; padding: 10px; border-radius: 10px;
+    background: #12151b; border: 1px solid var(--line);
+  }
+  .score .n { font-size: 26px; font-weight: 700; }
+  .score .who { font-size: 12px; color: var(--muted); }
+  .score.turn { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -1px; margin-right: 5px; }
+  .dot.black { background: #111; border: 1px solid #555; }
+  .dot.white { background: #f4f4f4; }
+
+  .status { min-height: 40px; padding: 10px 12px; border-radius: 10px; background: #12151b;
+            border: 1px solid var(--line); font-size: 14px; }
+  .status.win { border-color: var(--legal); color: var(--legal); font-weight: 600; }
+
+  fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 0; }
+  legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+  .row label { width: 52px; color: var(--muted); font-size: 13px; }
+  select, input[type=number] {
+    flex: 1; background: #0e1116; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 8px; font: inherit;
+  }
+  input[type=number] { width: 64px; flex: 0 0 64px; }
+  button.action {
+    background: var(--accent); color: #06121f; border: none; border-radius: 9px;
+    padding: 10px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.action:hover { filter: brightness(1.08); }
+  button.ghost {
+    background: transparent; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 9px; padding: 8px 10px; font: inherit; cursor: pointer; flex: 1;
+  }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .watch { display: flex; gap: 8px; }
+  .speed { display: flex; align-items: center; gap: 8px; }
+  .speed input { flex: 1; }
+  .hint { color: var(--muted); font-size: 12px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>Othello</h1>
+  <div class="sub">Play a bot, or watch two bots. Minimax at any depth · Edax (if installed) · random · greedy.</div>
+
+  <div class="layout">
+    <div class="board" id="board" role="grid" aria-label="Othello board, 8 by 8"></div>
+
+    <div class="panel">
+      <div class="scores">
+        <div class="score" id="scoreBlack"><div class="n" id="nBlack">2</div><div class="who"><span class="dot black"></span>Black</div></div>
+        <div class="score" id="scoreWhite"><div class="n" id="nWhite">2</div><div class="who"><span class="dot white"></span>White</div></div>
+      </div>
+
+      <div class="status" id="status" role="status" aria-live="polite">Choose players and press New Game.</div>
+
+      <fieldset>
+        <legend>Players</legend>
+        <div class="row">
+          <label for="blackType">Black</label>
+          <select id="blackType" aria-label="Black player type"></select>
+          <input type="number" id="blackParam" min="1" max="30" value="1" aria-label="Black difficulty">
+        </div>
+        <div class="row">
+          <label for="whiteType">White</label>
+          <select id="whiteType" aria-label="White player type"></select>
+          <input type="number" id="whiteParam" min="1" max="30" value="4" aria-label="White difficulty">
+        </div>
+      </fieldset>
+
+      <button class="action" id="newBtn">New Game</button>
+
+      <fieldset>
+        <legend>Watch controls (for bot turns)</legend>
+        <div class="speed">
+          <span class="hint">Speed</span>
+          <input type="range" id="speed" min="0" max="1500" step="100" value="500" aria-label="Delay between bot moves">
+        </div>
+        <div class="watch" style="margin-top:8px">
+          <button class="ghost" id="pauseBtn">Pause</button>
+          <button class="ghost" id="stepBtn">Step</button>
+        </div>
+      </fieldset>
+
+      <div class="hint" id="edaxHint"></div>
+    </div>
+  </div>
+
+<script>
+const $ = id => document.getElementById(id);
+const BLACK = 1, WHITE = -1, PASS = 64;
+let gameId = null, state = null, paused = false, busy = false, config = {};
+
+// ---- build player selects ----
+function playerOptions() {
+  const opts = [["human","Human"],["minimax","Minimax"],["random","Random"],["greedy","Greedy"]];
+  if (config.edax_available) opts.splice(2, 0, ["edax","Edax"]);
+  return opts;
+}
+function fillSelect(sel, chosen) {
+  sel.innerHTML = "";
+  for (const [val, label] of playerOptions()) {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label; if (val === chosen) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+function needsParam(type) { return type === "minimax" || type === "edax"; }
+function syncParam(typeSel, paramInput) {
+  const t = typeSel.value;
+  paramInput.style.display = needsParam(t) ? "" : "none";
+  if (t === "minimax") { paramInput.max = config.max_minimax_depth || 8; if (+paramInput.value > paramInput.max) paramInput.value = 4; }
+  if (t === "edax") { paramInput.max = config.max_edax_level || 30; }
+}
+function specOf(typeSel, paramInput) {
+  const t = typeSel.value;
+  if (t === "minimax") return "minimax:" + paramInput.value;
+  if (t === "edax") return "edax:" + paramInput.value;
+  return t;
+}
+
+// ---- board ----
+const cells = [];
+function buildBoard() {
+  const b = $("board");
+  for (let i = 0; i < 64; i++) {
+    const btn = document.createElement("button");
+    btn.className = "cell"; btn.setAttribute("role", "gridcell");
+    btn.dataset.i = i;
+    btn.addEventListener("click", () => onCell(i));
+    b.appendChild(btn); cells.push(btn);
+  }
+}
+const rc = i => `row ${Math.floor(i/8)+1}, column ${i%8+1}`;
+
+function render() {
+  const s = state;
+  const legal = new Set(s.current_is_human ? s.legal : []);
+  for (let i = 0; i < 64; i++) {
+    const c = cells[i], v = s.board[i];
+    c.className = "cell";
+    c.innerHTML = "";
+    let label = rc(i) + ", ";
+    if (v === BLACK) { c.innerHTML = '<span class="disc black"></span>'; label += "black disc"; }
+    else if (v === WHITE) { c.innerHTML = '<span class="disc white"></span>'; label += "white disc"; }
+    else label += "empty";
+    if (legal.has(i)) { c.classList.add("legal", "playable"); label += ", legal move — press to play"; }
+    if (i === s.last_move) c.classList.add("last");
+    c.setAttribute("aria-label", label);
+    c.disabled = !(s.current_is_human && legal.has(i));
+  }
+  $("nBlack").textContent = s.black_count;
+  $("nWhite").textContent = s.white_count;
+  $("scoreBlack").classList.toggle("turn", !s.done && s.player === BLACK);
+  $("scoreWhite").classList.toggle("turn", !s.done && s.player === WHITE);
+
+  const st = $("status");
+  st.classList.remove("win");
+  if (s.done) {
+    st.classList.add("win");
+    st.textContent = s.result === 0 ? `Draw — ${s.black_count} : ${s.white_count}`
+      : `${s.result === BLACK ? "Black" : "White"} wins — ${s.black_count} : ${s.white_count}`;
+  } else {
+    const who = s.current_name, spec = s.player === BLACK ? s.black_spec : s.white_spec;
+    st.textContent = `${who} to move (${spec})` + (s.must_pass ? " — no legal move, must pass" : s.current_is_human ? " — your turn" : " — thinking…");
+  }
+}
+
+// ---- flow ----
+async function api(path, body) {
+  const r = await fetch(path, { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+  if (!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail || "error"); }
+  return r.json();
+}
+
+async function newGame() {
+  try {
+    const res = await api("/api/new", { black: specOf($("blackType"), $("blackParam")), white: specOf($("whiteType"), $("whiteParam")) });
+    gameId = res.game_id; state = res.state; paused = false; $("pauseBtn").textContent = "Pause";
+    render(); tick();
+  } catch (e) { $("status").textContent = "Could not start: " + e.message; }
+}
+
+function tick() {
+  if (!state || state.done) return;
+  if (state.current_is_human) {
+    if (state.must_pass) setTimeout(() => doMove(PASS), 700);   // nothing to click; pass for the user
+    return;                                                     // else wait for a click
+  }
+  if (!paused) setTimeout(botMove, +$("speed").value);          // bot turn: auto-advance unless paused
+}
+
+async function doMove(move) {
+  if (busy || !state || state.done) return;
+  busy = true;
+  try { const res = await api("/api/move", { game_id: gameId, move }); state = res.state; render(); tick(); }
+  catch (e) { $("status").textContent = e.message; }
+  finally { busy = false; }
+}
+
+async function botMove() {
+  if (busy || !state || state.done || state.current_is_human) return;
+  busy = true;
+  try { const res = await api("/api/bot_move", { game_id: gameId }); state = res.state; render(); tick(); }
+  catch (e) { $("status").textContent = e.message; }
+  finally { busy = false; }
+}
+
+function onCell(i) {
+  if (state && state.current_is_human && !state.done) doMove(i);
+}
+
+// ---- controls ----
+$("newBtn").addEventListener("click", newGame);
+$("pauseBtn").addEventListener("click", () => {
+  paused = !paused; $("pauseBtn").textContent = paused ? "Resume" : "Pause";
+  if (!paused) tick();
+});
+$("stepBtn").addEventListener("click", () => { if (state && !state.current_is_human) botMove(); });
+for (const side of ["black","white"]) {
+  $(side+"Type").addEventListener("change", () => syncParam($(side+"Type"), $(side+"Param")));
+}
+
+// ---- init ----
+(async function init() {
+  buildBoard();
+  config = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
+  fillSelect($("blackType"), "human");
+  fillSelect($("whiteType"), "minimax");
+  syncParam($("blackType"), $("blackParam"));
+  syncParam($("whiteType"), $("whiteParam"));
+  $("edaxHint").innerHTML = config.edax_available
+    ? "Edax is installed — try White = Edax. Even level 1–2 is very strong."
+    : "Edax not installed (optional). See opponents/EDAX_SETUP.md to enable it.";
+})();
+</script>
+</body>
+</html>

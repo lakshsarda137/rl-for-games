@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+data/
+.DS_Store
+third_party/
