@@ -17,6 +17,10 @@ Endpoints:
   GET  /api/arena/{id}       -> poll a match: tally + per-game live boards
   POST /api/arena/{id}/control {action} -> pause | resume | stop the match
   POST /api/checkpoints/delete {label}  -> soft-delete a checkpoint (move to _trash)
+  GET  /tournament                      -> round-robin tournament page
+  POST /api/tournament {players,...}    -> start a round-robin (>=2 bots), points table
+  GET  /api/tournament/{id}             -> poll: standings + live matches/games
+  POST /api/tournament/{id}/control {action} -> pause | resume | stop
 
 Player specs (strings): "human", "random", "greedy", "minimax:D", "edax:L", and the trained
 net "az" / "az:<sims>" / "az@<ckpt>" / "az:<sims>@<ckpt>" (ckpt = "latest" or "iterNNNN").
@@ -359,6 +363,167 @@ def _trim_arenas():
         _ARENA_PRIV.pop(k, None)
 
 
+# --- Round-robin tournament: N participants, every pair plays a match ---------
+# A "match" is games_per_match colour-alternated games between two participants;
+# a "game" is one Othello game. Match scoring: more game-wins => match win (3 pts),
+# a match drawn on game-wins => 1.5 each, loss => 0. Standings tiebreaker = total
+# game-wins across the whole tournament. All games (across all matches) share ONE
+# ThreadPoolExecutor of `concurrency` slots, so several matches can be live at once
+# — the UI watches whichever matches currently have games in flight. Same live-slot
+# + pause/stop machinery as the Arena; _TOURNEY_PRIV holds the non-JSON sidecar.
+_TOURNEYS = {}
+_TOURNEY_PRIV = {}
+MAX_TOURNEY_PLAYERS = 8
+MAX_TOURNEY_GAMES = 100        # games per match
+MAX_TOURNEY_CONC = 8
+
+
+def _pretty_label(spec):
+    """Short human label for a bot spec, for the standings table + match cards."""
+    s = (spec or "").strip().lower()
+    if s == "random":
+        return "Random"
+    if s == "greedy":
+        return "Greedy"
+    if s.startswith("minimax:"):
+        return "Minimax d" + s.split(":")[1]
+    if s.startswith("edax"):
+        return "Edax L" + (s.split(":")[1] if ":" in s else "6")
+    if _is_az_spec(s):
+        sims, ck = _parse_az_spec(s)
+        if ck == "latest":
+            return f"AZ latest·{sims}"
+        m = re.search(r"iter0*(\d+)", ck)
+        return (f"AZ iter{m.group(1)}" if m else f"AZ {ck}") + f"·{sims}"
+    return spec
+
+
+def _recompute_standings(job):
+    """Rebuild the points table from the matches (called as games/matches finish)."""
+    n = len(job["participants"])
+    st = [{"i": i, "points": 0.0, "mp": 0, "mw": 0, "md": 0, "ml": 0,
+           "gw": 0, "gd": 0, "gl": 0} for i in range(n)]
+    for m in job["matches"]:
+        a, b = m["a"], m["b"]
+        st[a]["gw"] += m["a_wins"]; st[a]["gl"] += m["b_wins"]; st[a]["gd"] += m["draws"]
+        st[b]["gw"] += m["b_wins"]; st[b]["gl"] += m["a_wins"]; st[b]["gd"] += m["draws"]
+        if m["done"]:
+            st[a]["mp"] += 1; st[b]["mp"] += 1
+            if m["result_winner"] == a:
+                st[a]["points"] += 3; st[a]["mw"] += 1; st[b]["ml"] += 1
+            elif m["result_winner"] == b:
+                st[b]["points"] += 3; st[b]["mw"] += 1; st[a]["ml"] += 1
+            else:
+                st[a]["points"] += 1.5; st[b]["points"] += 1.5
+                st[a]["md"] += 1; st[b]["md"] += 1
+    st.sort(key=lambda r: (r["points"], r["gw"]), reverse=True)   # tiebreak on game-wins
+    job["standings"] = st
+
+
+def _play_tourney_game(job, priv, mi, gi):
+    """Play one tournament game move-by-move, publishing live board + honouring pause/stop."""
+    m = job["matches"][mi]
+    slot = m["games"][gi]
+    if job["cancel"]:
+        slot["aborted"] = True; slot["done"] = True; return
+    cfg = priv["matches"][mi]["games"][gi]
+    black_fn = cfg["black_make"](np.random.default_rng(cfg["seed"]))
+    white_fn = cfg["white_make"](np.random.default_rng(cfg["seed"] + 1))
+    board = initial_board()
+    player = BLACK
+    opening = list(cfg["opening"])
+    while not is_terminal(board):
+        if job["cancel"]:
+            slot["aborted"] = True; slot["done"] = True; return
+        while job["paused"] and not job["cancel"]:
+            time.sleep(0.05)
+        if opening:
+            move = opening.pop(0)
+        elif not legal_moves(board, player):
+            move = PASS
+        else:
+            move = (black_fn if player == BLACK else white_fn)(board, player)
+        board = apply_move(board, player, move)
+        player = -player
+        _publish_slot(slot, board, player, move)
+
+    result = int(winner(board))
+    with priv["lock"]:
+        slot["done"] = True
+        slot["result"] = result
+        a, b = m["a"], m["b"]
+        if result == 0:
+            m["draws"] += 1; slot["winner"] = None
+        else:
+            a_won = (result == BLACK) == cfg["a_is_black"]
+            if a_won:
+                m["a_wins"] += 1; slot["winner"] = a
+            else:
+                m["b_wins"] += 1; slot["winner"] = b
+        m["played"] = m["a_wins"] + m["b_wins"] + m["draws"]
+        job["played_games"] += 1
+        if m["played"] >= m["total"] and not m["done"]:
+            m["done"] = True
+            m["result_winner"] = (a if m["a_wins"] > m["b_wins"]
+                                  else b if m["b_wins"] > m["a_wins"] else None)
+        _recompute_standings(job)
+
+
+def _run_tourney(job_id, specs, games_per_match, concurrency, seed):
+    job = _TOURNEYS[job_id]
+    priv = _TOURNEY_PRIV[job_id]
+    try:
+        makes = [_make_factory(s)[0] for s in specs]        # loads each net once, validates
+    except Exception as exc:
+        job.update(error=str(exc), done=True)
+        return
+    n = len(specs)
+    job["participants"] = [{"i": i, "spec": specs[i], "label": _pretty_label(specs[i])} for i in range(n)]
+    rng = np.random.default_rng(seed)
+    start = [int(x) for x in initial_board().reshape(-1)]
+    tasks = []
+    for a in range(n):
+        for b in range(a + 1, n):
+            mi = len(job["matches"])
+            pub_games, priv_games = [], []
+            for gi in range(games_per_match):
+                a_is_black = (gi % 2 == 0)                  # alternate colours across the match
+                pub_games.append({"idx": gi, "a_is_black": a_is_black, "board": list(start),
+                                  "to_move": int(BLACK), "last_move": None, "ply": 0,
+                                  "black_count": 2, "white_count": 2, "done": False,
+                                  "aborted": False, "result": None, "winner": None})
+                priv_games.append({"black_make": makes[a] if a_is_black else makes[b],
+                                   "white_make": makes[b] if a_is_black else makes[a],
+                                   "opening": _random_opening(rng, 4),
+                                   "seed": int(rng.integers(1 << 30)), "a_is_black": a_is_black})
+                tasks.append((mi, gi))
+            job["matches"].append({"i": mi, "a": a, "b": b,
+                                   "label_a": job["participants"][a]["label"],
+                                   "label_b": job["participants"][b]["label"],
+                                   "games": pub_games, "a_wins": 0, "b_wins": 0, "draws": 0,
+                                   "played": 0, "total": games_per_match, "done": False,
+                                   "result_winner": None})
+            priv["matches"].append({"games": priv_games})
+    job["total_games"] = len(tasks)
+    _recompute_standings(job)
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as ex:
+            futs = [ex.submit(_play_tourney_game, job, priv, mi, gi) for (mi, gi) in tasks]
+            for f in as_completed(futs):
+                exc = f.exception()
+                if exc and not job.get("error"):
+                    job["error"] = f"game error: {exc}"
+    finally:
+        job["done"] = True
+
+
+def _trim_tourneys():
+    finished = [k for k, v in _TOURNEYS.items() if v.get("done")]
+    for k in finished[:-10]:
+        _TOURNEYS.pop(k, None)
+        _TOURNEY_PRIV.pop(k, None)
+
+
 def read_metrics(path=METRICS_PATH):
     """Parse data/metrics.jsonl into a list of per-iteration dicts (skip bad lines)."""
     rows = []
@@ -481,6 +646,12 @@ class DeleteCkptReq(BaseModel):
     label: str                    # checkpoint stem to remove, e.g. "run2-iter04" or "latest"
 
 
+class TourneyReq(BaseModel):
+    players: list = []            # >=2 bot specs (no human)
+    games_per_match: int = 4
+    concurrency: int = 4
+
+
 # --- routes ------------------------------------------------------------------
 @app.get("/")
 def index():
@@ -490,6 +661,11 @@ def index():
 @app.get("/dashboard")
 def dashboard():
     return FileResponse(os.path.join(FRONTEND_DIR, "dashboard.html"))
+
+
+@app.get("/tournament")
+def tournament_page():
+    return FileResponse(os.path.join(FRONTEND_DIR, "tournament.html"))
 
 
 @app.get("/api/metrics")
@@ -582,6 +758,63 @@ def config():
         "checkpoints": list_checkpoints() if az_path is not None else [],
         "max_arena_workers": MAX_ARENA_WORKERS,
     }
+
+
+@app.post("/api/tournament")
+def tournament_start(req: TourneyReq):
+    specs = [s for s in (req.players or []) if (s or "").strip()]
+    if len(specs) < 2:
+        raise HTTPException(400, "a tournament needs at least 2 participants")
+    if len(specs) > MAX_TOURNEY_PLAYERS:
+        raise HTTPException(400, f"at most {MAX_TOURNEY_PLAYERS} participants")
+    if any((s or "").strip().lower() == "human" for s in specs):
+        raise HTTPException(400, "participants must be bots, not human")
+    gpm = max(1, min(MAX_TOURNEY_GAMES, int(req.games_per_match)))
+    conc = max(1, min(MAX_TOURNEY_CONC, int(req.concurrency)))
+    try:                                   # validate every spec up front -> clean 400
+        for s in specs:
+            _make_factory(s)
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+    job_id = uuid.uuid4().hex[:12]
+    n_matches = len(specs) * (len(specs) - 1) // 2
+    _TOURNEYS[job_id] = {"job_id": job_id, "players": specs, "games_per_match": gpm,
+                         "concurrency": conc, "n_matches": n_matches, "participants": [],
+                         "matches": [], "standings": [], "total_games": n_matches * gpm,
+                         "played_games": 0, "done": False, "paused": False,
+                         "cancel": False, "error": None}
+    _TOURNEY_PRIV[job_id] = {"matches": [], "lock": threading.Lock()}
+    _trim_tourneys()
+    t = threading.Thread(target=_run_tourney,
+                         args=(job_id, specs, gpm, conc, int.from_bytes(os.urandom(4), "little")),
+                         daemon=True)
+    t.start()
+    return _TOURNEYS[job_id]
+
+
+@app.get("/api/tournament/{job_id}")
+def tournament_status(job_id: str):
+    job = _TOURNEYS.get(job_id)
+    if job is None:
+        raise HTTPException(404, "unknown tournament (it may have expired)")
+    return job
+
+
+@app.post("/api/tournament/{job_id}/control")
+def tournament_control(job_id: str, req: ArenaControl):
+    job = _TOURNEYS.get(job_id)
+    if job is None:
+        raise HTTPException(404, "unknown tournament (it may have expired)")
+    action = (req.action or "").strip().lower()
+    if action == "pause":
+        job["paused"] = True
+    elif action == "resume":
+        job["paused"] = False
+    elif action == "stop":
+        job["cancel"] = True; job["paused"] = False
+    else:
+        raise HTTPException(400, "action must be pause, resume, or stop")
+    return job
 
 
 @app.post("/api/checkpoints/delete")

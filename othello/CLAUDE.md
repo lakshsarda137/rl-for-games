@@ -149,6 +149,19 @@ runnable artifact. See `README.md` for structure.
   under its name (`prettySpec`, e.g. "AZ iter 25", "Minimax d4"), and the Arena focus label names which
   version plays which colour. Verified: DOM dump shows one option per checkpoint; `az@<ckpt>` specs create
   games end-to-end.
+- **Round-robin tournament (2026-07-20, user asked).** New page `serve/frontend/tournament.html` (route
+  `GET /tournament`; linked from the play topbar). Add ≥2 bots (any checkpoint/minimax/edax/random/greedy,
+  each its own participant), set games/match + concurrency, and every pair plays a match. **Scoring:** more
+  game-wins → match win = **3 pts**, match drawn on game-wins = **1.5** each, loss = **0**; standings
+  **tiebreaker = total game-wins** across the tournament. Backend: `_run_tourney` builds all `nC2` matches,
+  submits every game to ONE `ThreadPoolExecutor(concurrency)` so **several matches run live at once**;
+  `_play_tourney_game` reuses the Arena's live-slot/publish/pause-stop machinery; `_recompute_standings`
+  rebuilds the points table as games finish. `_TOURNEYS`/`_TOURNEY_PRIV` mirror the arena split. Endpoints:
+  `POST /api/tournament {players,games_per_match,concurrency}`, `GET /api/tournament/{id}`,
+  `POST .../control {pause|resume|stop}`. Frontend: live **standings table** (medals, pts, W·D·L, gold
+  game-wins), a **matches grid** (pending/live/done + score + winner), and a **spectate panel** reusing the
+  game-viewer (focus board + clickable game tiles) for whichever match you click. Backend tested end-to-end
+  (round-robin count, concurrent live matches, 3/1.5/0 scoring, tiebreak); UI screenshot-verified.
 
 ## Next steps (in likely order)
 
