@@ -126,6 +126,19 @@ runnable artifact. See `README.md` for structure.
   spec, checkpoint subrows, arena controls all preserved. Verified with before/after headless screenshots.
   **Checkpoint upload cadence default changed 5→2** (`--wandb-ckpt-every`, `run/train_loop.py` both the
   argparse default and the `train()` kwarg) so mid-training pulls are fresher; docs updated to match.
+- **Checkpoint persistence + delete-from-UI (2026-07-20, user hit data loss).** `latest.pt` is a single
+  ROLLING slot, so `pull_wandb.py` overwriting it clobbered the previous model (user pulled run2-iter4 over
+  run1-iter25 and lost iter25 locally — still on W&B run1). Fixes: **(a)** `pull_wandb.py` now ALSO writes a
+  stable archival copy `data/checkpoints/<run>-iter<NN>.pt` on every pull, so pulls are non-destructive and
+  each stays selectable. **(b)** `backend.list_checkpoints()`/`checkpoint_path()` generalised to ANY `*.pt`
+  stem (not just `latest`/`iterNNNN`) — parses iteration from an `iter<N>` substring; path-traversal blocked
+  (charset regex + dirname==CKPT_DIR check); `_trash/` subdir excluded. So archived pulls appear in the picker
+  and play via `az:<sims>@<run>-iter<NN>`. **(c)** New `POST /api/checkpoints/delete {label}` — **SOFT delete**
+  (moves the `.pt` to `data/checkpoints/_trash/`, never `os.remove`), surfaced as a **Models card** in the web
+  UI (each checkpoint + a Delete button; confirm dialog; refreshes the list + all ckpt selects). Tested
+  end-to-end (archived-name listing/parse/play, soft-delete→_trash, traversal/missing→404); real models
+  untouched. **To recover the lost iter25: `python run/pull_wandb.py --run run1`** (now archives it as
+  `run1-iter25.pt`).
 
 ## Next steps (in likely order)
 

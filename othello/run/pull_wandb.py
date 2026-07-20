@@ -4,7 +4,10 @@ This is how you play the bot **mid-training**. While training runs on Kaggle wit
 `--wandb`, it uploads the checkpoint to W&B every few iterations as a versioned
 model artifact (alias `latest`). This script downloads that `latest` artifact and
 drops it at `data/checkpoints/latest.pt`, so the local web app plays the freshest
-weights — no waiting for the run to finish, no second Kaggle cell.
+weights — no waiting for the run to finish, no second Kaggle cell. It ALSO keeps a
+stable archival copy `data/checkpoints/<run>-iter<NN>.pt` so a later pull (this
+run's next iter, or a different run) never clobbers an earlier model — each stays
+selectable in the web app's checkpoint picker (latest.pt alone is one rolling slot).
 
     # one-shot: grab the current weights
     python run/pull_wandb.py --run run1
@@ -30,6 +33,7 @@ the model -> Download, and drop latest.pt into data/checkpoints/ yourself.)
 
 import argparse
 import os
+import re
 import shutil
 import sys
 import time
@@ -70,11 +74,22 @@ def pull_once(entity, project, name, alias, out):
     dst_dir = os.path.join(out, "checkpoints")
     os.makedirs(dst_dir, exist_ok=True)
     dst = os.path.join(dst_dir, "latest.pt")
-    shutil.copy2(src, dst)
+    shutil.copy2(src, dst)                          # rolling latest.pt (auto-picked-up by the app)
     it = (art.metadata or {}).get("iteration", "?")
-    print(f"[pull-wandb] installed {ref} (iteration {it}) -> {os.path.relpath(dst)}")
+    # Also keep a STABLE archival copy named <run>-iter<NN>.pt so a later pull
+    # (this run's next iter, or a DIFFERENT run) can't clobber this checkpoint —
+    # it stays selectable in the web app's checkpoint picker. latest.pt alone is a
+    # single rolling slot; the archive is what makes pulls non-destructive.
+    archived = ""
+    if isinstance(it, int):
+        stem = re.sub(r"[^a-z0-9._-]+", "-", str(name).lower()).strip("-") or "run"
+        arch = os.path.join(dst_dir, f"{stem}-iter{it:04d}.pt")
+        shutil.copy2(src, arch)
+        archived = f" + {os.path.basename(arch)}"
+    print(f"[pull-wandb] installed {ref} (iteration {it}) -> "
+          f"{os.path.relpath(dst)}{archived}")
     print("[pull-wandb] start/refresh serve/backend.py; the web app uses the new "
-          "weights on the next New Game.")
+          "weights on the next New Game (pick the archived checkpoint to keep it).")
     return True
 
 
