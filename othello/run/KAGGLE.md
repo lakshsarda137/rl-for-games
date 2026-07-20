@@ -83,14 +83,17 @@ Run from the `othello/` dir. `--out /kaggle/working/az_data` keeps outputs toget
 | Run more/fewer iters | add `--iterations N` (when resuming, N = N *more* iterations) |
 | Stronger training targets | add `--sims N` (MCTS sims/move in self-play; default 96). Higher = better targets, fewer games/sec |
 | Bigger/smaller net | add `--net BxC` (default `10x128`; `--net 5x64` = the old quick net) |
-| More games per iter | add `--games N` (self-play batch size; default 96) |
+| More games per iter | add `--games N` (default 96; **also scales train-steps + buffer linearly**, so the extra data is trained on) |
 | GPU search (parked) | `--selfplay-torch --games N` runs the SEARCH on the GPU — measured on a T4, caps ~2 g/s and loses to NumPy at small batch, so NOT recommended there (see the flag note below) |
 
 The flags that matter:
 - **`--kaggle`** — the GPU config: 10×128 net, array-ops self-play, `workers=1`, eval off, 30 iters, `device=cuda`.
 - **`--net BxC`** — override the network size (e.g. `--net 5x64` for the old net, `--net 10x128` = default).
   Bigger = stronger ceiling but slower to fill; on **resume** the checkpoint's own architecture wins.
-- **`--games N`** — self-play games per iteration (default 96). Pair a big N with `--selfplay-torch`.
+- **`--games N`** — self-play games per iteration (default 96). **`steps_per_iter` and `buffer_size` now
+  scale linearly with N** (baseline ~2.6 steps/game), so doubling games doubles the training on it and keeps
+  the same span of history — the extra data actually gets learned from, not under-trained/evicted early. The
+  startup line prints the resulting `train steps/iter` + `buffer` so you can confirm. Pair a big N with `--selfplay-torch`.
 - **`--selfplay-torch`** — run array-ops self-play on the **Torch** engine + MCTS so the whole *search*
   runs on the GPU (the NumPy default keeps the search on the CPU; only the net is on-device). Correctness
   is proven identical to the NumPy path. **MEASURED on a T4 (2026-07-20): not worth it there** — g/s vs
