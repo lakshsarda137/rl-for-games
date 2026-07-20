@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Othello — Tournament</title>
+<style>
+  :root {
+    --bg: #0b0d11; --bg-grad: radial-gradient(1200px 700px at 50% -10%, #141926 0%, #0b0d11 55%);
+    --card: #151922; --card-2: #1b2028; --inset: #0f131a;
+    --line: #262c37; --line-2: #333b48;
+    --ink: #e8eaef; --muted: #98a0ad; --faint: #6a7280;
+    --primary: #5b8cff; --primary-2: #3f74f5; --on-primary: #fff;
+    --good: #46c96f; --bad: #f26a6a; --warn: #f3c04e; --gold: #f3c04e;
+    --felt: #1c7a46;
+    --shadow: 0 20px 45px rgba(0,0,0,.5);
+    --r-lg: 16px; --r-md: 12px; --r-sm: 9px;
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5l3.5 3 3.5-3' fill='none' stroke='%2398a0ad' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; padding: 28px 20px 48px;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg-grad); background-color: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 13px; }
+  .brand .mark { width: 40px; height: 40px; border-radius: 11px; flex: 0 0 auto; background: linear-gradient(150deg, #24925a, #0d5230); display: grid; place-items: center; box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 4px 12px rgba(0,0,0,.4); }
+  .brand .mark::before { content: "🏆"; font-size: 19px; }
+  h1 { font-size: 21px; margin: 0; letter-spacing: .2px; font-weight: 650; }
+  .tagline { margin: 1px 0 0; color: var(--muted); font-size: 13px; }
+  .links { display: flex; gap: 8px; }
+  .link-btn { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; color: var(--ink); background: var(--card); border: 1px solid var(--line); padding: 9px 14px; border-radius: var(--r-sm); font-size: 13.5px; font-weight: 550; transition: border-color .15s, background .15s; }
+  .link-btn:hover { border-color: var(--line-2); background: var(--card-2); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 18px; margin-bottom: 18px; }
+  .card > h2 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 14px; font-size: 11.5px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  .card > h2 .note { font-weight: 500; letter-spacing: .02em; text-transform: none; color: var(--faint); font-size: 11.5px; }
+
+  .setup { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  .addrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .addrow .tag { font-size: 12px; color: var(--muted); }
+  select, input[type=number] { height: 38px; background: var(--inset); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 11px; font: inherit; min-width: 0; transition: border-color .12s; }
+  select:hover, input:hover { border-color: var(--line-2); } select:focus, input:focus { outline: none; border-color: var(--primary); }
+  select { appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 30px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right 11px center; }
+  input.num { width: 66px; flex: 0 0 66px; text-align: center; padding: 0 8px; }
+  #addType { flex: 1 1 200px; min-width: 160px; }
+
+  .btn { height: 40px; padding: 0 16px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--card-2); color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; transition: background .12s, border-color .12s, filter .12s; }
+  .btn:hover { background: #232935; border-color: var(--line-2); } .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+  .btn.primary { background: linear-gradient(180deg, var(--primary), var(--primary-2)); border-color: transparent; color: var(--on-primary); box-shadow: 0 6px 16px rgba(63,116,245,.28); }
+  .btn.primary:hover { filter: brightness(1.07); }
+  .btn.sm { height: 33px; padding: 0 14px; font-size: 13.5px; }
+  .btn.danger { color: #ff9c9c; border-color: #4e2626; background: transparent; }
+  .btn.danger:hover { background: rgba(242,106,106,.12); border-color: #7a3030; }
+
+  .chips-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pchip { display: flex; align-items: center; gap: 9px; padding: 6px 8px 6px 13px; background: var(--inset); border: 1px solid var(--line); border-radius: 999px; font-size: 13px; }
+  .pchip .x { border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+  .pchip .x:hover { color: var(--bad); }
+  .pchip-empty { color: var(--faint); font-size: 12.5px; }
+  .settings { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  .settings label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .start-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  .runbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .pill { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.running { color: #86e4a6; border-color: #2f7a48; background: rgba(70,201,111,.09); }
+  .pill.paused { color: var(--warn); border-color: #7a611a; background: rgba(243,192,78,.09); }
+  .pill.done { color: #8fb8ff; border-color: #2c5a86; background: rgba(91,140,255,.1); }
+  .pill.stopped, .pill.error { color: #ff9c9c; border-color: #7a2f2f; background: rgba(242,106,106,.09); }
+  .runbar .actions { margin-left: auto; display: flex; gap: 8px; }
+  .progress { height: 7px; border-radius: 999px; background: var(--inset); border: 1px solid var(--line); overflow: hidden; margin-top: 12px; }
+  .progress > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--primary-2), var(--primary)); transition: width .3s; }
+
+  /* standings table */
+  .table-wrap { overflow-x: auto; }
+  table.tbl { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.tbl th, table.tbl td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  table.tbl th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 650; }
+  table.tbl td.num, table.tbl th.num { text-align: right; }
+  table.tbl tbody tr:hover { background: rgba(255,255,255,.02); }
+  table.tbl tr.leader td { background: rgba(243,192,78,.06); }
+  .rank { color: var(--faint); width: 34px; }
+  .rank .medal { font-size: 14px; }
+  .who { font-weight: 600; }
+  .pts { font-weight: 700; font-size: 15.5px; }
+  .subw { color: var(--good); } .subl { color: var(--bad); } .subd { color: var(--muted); }
+  .tiebreak { color: var(--gold); }
+
+  /* matches grid */
+  .matches { display: flex; flex-wrap: wrap; gap: 12px; }
+  .mcard { width: 232px; padding: 12px 13px; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2); cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+  .mcard:hover { border-color: var(--line-2); }
+  .mcard.sel { border-color: var(--primary); }
+  .mcard.live { box-shadow: 0 0 0 1px rgba(70,201,111,.35); }
+  .mcard .pair { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .mcard .team { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+  .mcard .team.w { color: var(--good); font-weight: 600; }
+  .mcard .score { font-weight: 700; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+  .mcard .foot { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; }
+  .mcard .stat { font-size: 11px; color: var(--muted); }
+  .mini-pill { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .mini-pill.live { color: #86e4a6; border-color: #2f7a48; }
+  .mini-pill.done { color: #8fb8ff; border-color: #2c5a86; }
+
+  /* spectate */
+  .spectate { display: grid; grid-template-columns: auto 1fr; gap: 24px; align-items: start; }
+  @media (max-width: 680px) { .spectate { grid-template-columns: 1fr; } }
+  .focus-cap { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .focus-cap b { color: var(--ink); }
+  .tiles { display: flex; flex-wrap: wrap; gap: 12px; align-content: flex-start; }
+  .tile { width: 104px; cursor: pointer; padding: 6px; border-radius: 10px; border: 1px solid transparent; background: var(--card-2); }
+  .tile:hover { border-color: var(--line-2); } .tile.focused { border-color: var(--primary); }
+  .tile .cap { margin-top: 6px; font-size: 11px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+  .mini-board { display: grid; grid-template-columns: repeat(8,1fr); grid-template-rows: repeat(8,1fr); gap: 1px; aspect-ratio: 1; background: #0e5c34; padding: 3px; border-radius: 6px; }
+  .mini-board.big { width: min(78vw, 290px); border-radius: 9px; padding: 5px; gap: 2px; }
+  .mcell { background: #1a7a46; border-radius: 1px; display: grid; place-items: center; min-width: 0; min-height: 0; }
+  .mcell.last { box-shadow: inset 0 0 0 2px rgba(255,209,102,.9); }
+  .mcell .d { width: 76%; aspect-ratio: 1; border-radius: 50%; }
+  .mcell .d.black { background: radial-gradient(circle at 34% 28%, #505050, #0a0a0a 78%); }
+  .mcell .d.white { background: radial-gradient(circle at 34% 28%, #fff, #ccd1d8 80%); }
+  .empty-note { color: var(--faint); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark"></span>
+      <div><h1>Tournament</h1><p class="tagline">Round-robin — every bot plays every other. Match win 3 · draw 1.5 · loss 0.</p></div>
+    </div>
+    <div class="links">
+      <a class="link-btn" href="/">♟ Play</a>
+      <a class="link-btn" href="/dashboard">📊 Dashboard</a>
+    </div>
+  </header>
+
+  <!-- setup -->
+  <div class="card" id="setupCard">
+    <h2>Set up <span class="note">add 2+ bots, then start</span></h2>
+    <div class="setup">
+      <div class="addrow">
+        <span class="tag">Add</span>
+        <select id="addType" aria-label="Participant type"></select>
+        <input type="number" id="addParam" class="num" value="2" aria-label="Participant parameter">
+        <button class="btn sm" id="addBtn">+ Add participant</button>
+      </div>
+      <div class="chips-row" id="participants"><span class="pchip-empty">No participants yet.</span></div>
+      <div class="settings">
+        <label>Games / match <input type="number" id="gpm" class="num" min="1" max="100" value="4"></label>
+        <label title="How many games run at once across all matches">Concurrency <input type="number" id="conc" class="num" min="1" max="8" value="4"></label>
+      </div>
+      <div class="start-row">
+        <button class="btn primary" id="startBtn" disabled>Start tournament</button>
+        <span class="note" id="setupHint"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- run controls -->
+  <div class="card" id="runCard" hidden>
+    <div class="runbar">
+      <span class="pill running" id="tState">running</span>
+      <span class="note" id="tSummary"></span>
+      <div class="actions">
+        <button class="btn sm" id="tPause">Pause</button>
+        <button class="btn sm" id="tStop">Stop</button>
+        <button class="btn sm" id="tNew" hidden>New tournament</button>
+      </div>
+    </div>
+    <div class="progress"><i id="tBar"></i></div>
+  </div>
+
+  <!-- standings -->
+  <div class="card" id="standCard" hidden>
+    <h2>Standings <span class="note">tiebreaker = total game wins</span></h2>
+    <div class="table-wrap">
+      <table class="tbl">
+        <thead><tr>
+          <th class="rank">#</th><th>Player</th>
+          <th class="num" title="Matches played">P</th>
+          <th class="num" title="Match W–D–L">W·D·L</th>
+          <th class="num">Pts</th>
+          <th class="num" title="Games won (tiebreaker) · lost · drawn">Games W·L·D</th>
+        </tr></thead>
+        <tbody id="standBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- matches -->
+  <div class="card" id="matchCard" hidden>
+    <h2>Matches <span class="note">click one to watch its games</span></h2>
+    <div class="matches" id="matchGrid"></div>
+  </div>
+
+  <!-- spectate selected match -->
+  <div class="card" id="specCard" hidden>
+    <h2 id="specTitle">Now watching</h2>
+    <div class="spectate">
+      <div>
+        <div class="focus-cap" id="specFocusCap">Game 1</div>
+        <div class="mini-board big" id="specFocusBoard"></div>
+      </div>
+      <div class="tiles" id="specTiles"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const BLACK = 1, WHITE = -1, PASS = 64;
+let config = {}, participants = [], job = null, jobId = null, timer = null;
+let focusMatch = null, focusGame = 0, tilesBuilt = -1, tileCells = [], focusCells = [];
+
+// ---------- player options (no human) ----------
+function ckptLabelText(c) { return c.is_latest ? `latest · iter ${c.iteration ?? "?"}` : c.iteration != null ? `iter ${c.iteration}` : c.label; }
+function fillPlayerSelect(sel) {
+  sel.innerHTML = "";
+  const add = (val, label, parent = sel) => { const o = document.createElement("option"); o.value = val; o.textContent = label; parent.appendChild(o); };
+  if (config.az_available && (config.checkpoints || []).length) {
+    const g = document.createElement("optgroup"); g.label = "AlphaZero net";
+    for (const c of config.checkpoints) add("az@" + c.label, "AZ · " + ckptLabelText(c), g);
+    sel.appendChild(g);
+  }
+  const g2 = document.createElement("optgroup"); g2.label = "Engines & baselines";
+  add("minimax", "Minimax", g2);
+  if (config.edax_available) add("edax", "Edax", g2);
+  add("random", "Random", g2); add("greedy", "Greedy", g2);
+  sel.appendChild(g2);
+}
+function paramKind(t) { return t.startsWith("az@") ? "az" : (t === "minimax" ? "minimax" : (t === "edax" ? "edax" : null)); }
+function syncAddParam() {
+  const t = $("addType").value, p = $("addParam"), k = paramKind(t);
+  p.hidden = !k;
+  if (k === "minimax") { p.min = 1; p.max = config.max_minimax_depth || 8; if (+p.value > p.max || +p.value < 1) p.value = 2; }
+  else if (k === "edax") { p.min = 0; p.max = config.max_edax_level || 30; if (+p.value > p.max) p.value = 6; }
+  else if (k === "az") { p.min = config.min_az_sims || 10; p.max = config.max_az_sims || 1000; if (+p.value < 10 || +p.value > 1000) p.value = 80; }
+}
+function specOf(t, pv) {
+  if (t.startsWith("az@")) return "az:" + pv + "@" + t.slice(3);
+  if (t === "minimax") return "minimax:" + pv;
+  if (t === "edax") return "edax:" + pv;
+  return t;
+}
+function prettySpec(spec) {
+  spec = (spec || "").toLowerCase();
+  if (spec === "random") return "Random";
+  if (spec === "greedy") return "Greedy";
+  if (spec.startsWith("minimax:")) return "Minimax d" + spec.split(":")[1];
+  if (spec.startsWith("edax")) return "Edax L" + (spec.split(":")[1] || "6");
+  if (spec.startsWith("az")) {
+    const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest", sims = (spec.match(/az:(\d+)/) || [])[1];
+    const base = ck === "latest" ? "AZ latest" : (ck.match(/iter0*(\d+)/) ? "AZ iter " + ck.match(/iter0*(\d+)/)[1] : "AZ " + ck);
+    return base + (sims ? " · " + sims : "");
+  }
+  return spec;
+}
+
+// ---------- participants ----------
+function renderParticipants() {
+  const box = $("participants");
+  if (!participants.length) { box.innerHTML = '<span class="pchip-empty">No participants yet.</span>'; }
+  else {
+    box.innerHTML = "";
+    participants.forEach((p, i) => {
+      const chip = document.createElement("span"); chip.className = "pchip";
+      chip.innerHTML = `<span>${p.label}</span>`;
+      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = "Remove";
+      x.addEventListener("click", () => { participants.splice(i, 1); renderParticipants(); });
+      chip.appendChild(x); box.appendChild(chip);
+    });
+  }
+  $("startBtn").disabled = participants.length < 2;
+  const n = participants.length;
+  $("setupHint").textContent = n < 2 ? "Add at least 2 participants." : `${n} players → ${n * (n - 1) / 2} matches.`;
+}
+function addParticipant() {
+  const t = $("addType").value, pv = $("addParam").value;
+  const spec = specOf(t, pv);
+  participants.push({ spec, label: prettySpec(spec) });
+  renderParticipants();
+}
+
+// ---------- mini-board helpers ----------
+function buildMini(container) { container.innerHTML = ""; const cs = []; for (let i = 0; i < 64; i++) { const c = document.createElement("div"); c.className = "mcell"; container.appendChild(c); cs.push(c); } return cs; }
+function paintCells(cs, board, last) {
+  for (let i = 0; i < 64; i++) { const v = board[i]; cs[i].className = "mcell" + (i === last ? " last" : ""); cs[i].innerHTML = v === BLACK ? '<span class="d black"></span>' : v === WHITE ? '<span class="d white"></span>' : ""; }
+}
+
+// ---------- start / poll ----------
+async function api(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) { const e = await r.json().catch(() => ({ detail: r.statusText })); throw new Error(e.detail || "error"); }
+  return r.json();
+}
+async function startTournament() {
+  $("startBtn").disabled = true;
+  try {
+    const res = await api("/api/tournament", { players: participants.map(p => p.spec), games_per_match: +$("gpm").value, concurrency: +$("conc").value });
+    jobId = res.job_id; focusMatch = null; focusGame = 0; tilesBuilt = -1;
+    $("runCard").hidden = false; $("standCard").hidden = false; $("matchCard").hidden = false;
+    render(res);
+    timer = setInterval(poll, 500);
+  } catch (e) { $("startBtn").disabled = false; $("setupHint").textContent = "Could not start: " + e.message; }
+}
+async function poll() {
+  if (!jobId) return;
+  const r = await fetch("/api/tournament/" + jobId);
+  if (!r.ok) { stopPolling(); return; }
+  const j = await r.json(); render(j);
+  if (j.done || j.error) { stopPolling(); $("tNew").hidden = false; }
+}
+function stopPolling() { if (timer) clearInterval(timer); timer = null; }
+
+// ---------- render ----------
+function matchStatus(m) {
+  if (m.done) return "done";
+  if (m.games.some(g => g.ply > 0)) return "live";
+  return "pending";
+}
+function render(j) {
+  job = j;
+  const st = j.error ? "error" : j.done ? (j.cancel ? "stopped" : "done") : (j.paused ? "paused" : "running");
+  $("tState").textContent = st; $("tState").className = "pill " + st;
+  $("tPause").textContent = j.paused ? "Resume" : "Pause";
+  $("tPause").disabled = !!j.done; $("tStop").disabled = !!j.done;
+  const doneMatches = (j.matches || []).filter(m => m.done).length;
+  $("tSummary").textContent = j.error ? ("Error: " + j.error)
+    : `${doneMatches}/${j.n_matches} matches · ${j.played_games}/${j.total_games} games`;
+  $("tBar").style.width = (100 * (j.played_games || 0) / (j.total_games || 1)).toFixed(1) + "%";
+  renderStandings(j); renderMatches(j); renderSpectate(j);
+}
+const MEDAL = ["🥇", "🥈", "🥉"];
+function fmtPts(p) { return Number.isInteger(p) ? String(p) : p.toFixed(1); }
+function renderStandings(j) {
+  const body = $("standBody"), parts = j.participants || [];
+  body.innerHTML = "";
+  (j.standings || []).forEach((s, rank) => {
+    const p = parts[s.i]; if (!p) return;
+    const tr = document.createElement("tr"); if (rank === 0 && j.done) tr.className = "leader";
+    tr.innerHTML =
+      `<td class="rank">${MEDAL[rank] ? `<span class="medal">${MEDAL[rank]}</span>` : rank + 1}</td>` +
+      `<td class="who">${p.label}</td>` +
+      `<td class="num">${s.mp}</td>` +
+      `<td class="num"><span class="subw">${s.mw}</span>·<span class="subd">${s.md}</span>·<span class="subl">${s.ml}</span></td>` +
+      `<td class="num pts">${fmtPts(s.points)}</td>` +
+      `<td class="num"><span class="tiebreak">${s.gw}</span>·<span class="subl">${s.gl}</span>·<span class="subd">${s.gd}</span></td>`;
+    body.appendChild(tr);
+  });
+}
+function renderMatches(j) {
+  const grid = $("matchGrid"), parts = j.participants || [];
+  grid.innerHTML = "";
+  // auto-focus the first live match if nothing is chosen yet
+  if (focusMatch == null) { const live = (j.matches || []).find(m => matchStatus(m) === "live"); if (live) focusMatch = live.i; }
+  (j.matches || []).forEach(m => {
+    const status = matchStatus(m);
+    const card = document.createElement("div"); card.className = "mcard " + status + (m.i === focusMatch ? " sel" : "");
+    const aw = m.done && m.result_winner === m.a, bw = m.done && m.result_winner === m.b;
+    card.innerHTML =
+      `<div class="pair"><span class="team${aw ? " w" : ""}">${m.label_a}</span>` +
+      `<span class="score">${m.a_wins}–${m.b_wins}</span>` +
+      `<span class="team${bw ? " w" : ""}" style="text-align:right">${m.label_b}</span></div>` +
+      `<div class="foot"><span class="stat">${m.played}/${m.total} games${m.draws ? " · " + m.draws + "D" : ""}</span>` +
+      `<span class="mini-pill ${status}">${status === "done" ? (m.result_winner == null ? "draw" : "done") : status}</span></div>`;
+    card.addEventListener("click", () => { focusMatch = m.i; focusGame = 0; tilesBuilt = -1; render(job); });
+    grid.appendChild(card);
+  });
+}
+function renderSpectate(j) {
+  const m = (j.matches || []).find(x => x.i === focusMatch);
+  if (!m) { $("specCard").hidden = true; return; }
+  $("specCard").hidden = false;
+  $("specTitle").innerHTML = `Now watching &nbsp;<b>${m.label_a}</b> <span style="color:var(--faint)">vs</span> <b>${m.label_b}</b>`;
+  if (tilesBuilt !== m.i) {   // (re)build tiles when the focused match changes
+    const grid = $("specTiles"); grid.innerHTML = ""; tileCells = [];
+    m.games.forEach((g, gi) => {
+      const tile = document.createElement("div"); tile.className = "tile";
+      const bd = document.createElement("div"); bd.className = "mini-board"; const cs = buildMini(bd);
+      const cap = document.createElement("div"); cap.className = "cap";
+      tile.appendChild(bd); tile.appendChild(cap);
+      tile.addEventListener("click", () => { focusGame = gi; renderSpectate(job); });
+      grid.appendChild(tile); tileCells.push({ cells: cs, cap, tile });
+    });
+    focusCells = buildMini($("specFocusBoard")); tilesBuilt = m.i;
+  }
+  const parts = j.participants || [];
+  m.games.forEach((g, gi) => {
+    const t = tileCells[gi]; if (!t) return;
+    paintCells(t.cells, g.board, g.last_move);
+    let out = "";
+    if (g.done) out = g.aborted ? " · —" : g.winner == null ? " · draw" : " · " + (g.winner === m.a ? "A" : "B");
+    t.cap.textContent = `#${gi + 1}${out}`;
+    t.tile.classList.toggle("focused", gi === focusGame);
+  });
+  const g = m.games[focusGame];
+  if (g) {
+    paintCells(focusCells, g.board, g.last_move);
+    const blackP = g.a_is_black ? m.label_a : m.label_b, whiteP = g.a_is_black ? m.label_b : m.label_a;
+    const oc = g.done ? (g.aborted ? "aborted" : g.winner == null ? "draw" : parts[g.winner].label + " won") : "in progress";
+    $("specFocusCap").innerHTML = `Game ${focusGame + 1} — <b>Black:</b> ${blackP} · <b>White:</b> ${whiteP} &nbsp;·&nbsp; ${g.black_count}–${g.white_count} · ply ${g.ply} · ${oc}`;
+  }
+}
+
+// ---------- controls ----------
+async function control(action) { if (!jobId) return; try { render(await api("/api/tournament/" + jobId + "/control", { action })); } catch (e) {} }
+$("addBtn").addEventListener("click", addParticipant);
+$("addType").addEventListener("change", syncAddParam);
+$("startBtn").addEventListener("click", startTournament);
+$("tPause").addEventListener("click", () => control($("tPause").textContent === "Pause" ? "pause" : "resume"));
+$("tStop").addEventListener("click", () => control("stop"));
+$("tNew").addEventListener("click", () => location.reload());
+
+// ---------- init ----------
+(async function init() {
+  config = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
+  fillPlayerSelect($("addType")); syncAddParam(); renderParticipants();
+})();
+</script>
+</body>
+</html>
