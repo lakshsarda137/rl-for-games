@@ -115,6 +115,17 @@ runnable artifact. See `README.md` for structure.
   resolved by `checkpoint_path`), so you can load a SPECIFIC past iter as a player and Arena iterN-vs-iterM /
   vs-edax. Backend end-to-end tested (parallel/spectate/pause/stop, bad-ckpt→400); board+picker+spectate
   screenshotted. **Backend must be launched from `othello/`** (sys.path sibling imports) — `python serve/backend.py`.
+- **Full UI rebuild (2026-07-20, after user pushback: "looks horrible", leaky/overflowing controls).**
+  `serve/frontend/index.html` rewritten from scratch with a proper design system (CSS custom-prop tokens for
+  color/spacing/radius; one `.card`/`.field`/`.btn` component set instead of nested `<fieldset>`s). Fixes the
+  concrete blunders: **controls can't overflow** (custom `appearance:none` selects with an inline-SVG chevron +
+  `min-width:0` on flex children), **starting position now renders on load** (client-side `previewState`, no
+  more blank green rectangle), a real **scoreboard** (two team chips, active side highlighted only DURING a
+  game), thinking-dots status, and the Arena spectate view restyled (state pill, progress bar, tally CHIPS,
+  focus board + outcome-tinted mini-board grid). Same functionality + same API contract; `az:<sims>@<ckpt>`
+  spec, checkpoint subrows, arena controls all preserved. Verified with before/after headless screenshots.
+  **Checkpoint upload cadence default changed 5→2** (`--wandb-ckpt-every`, `run/train_loop.py` both the
+  argparse default and the `train()` kwarg) so mid-training pulls are fresher; docs updated to match.
 
 ## Next steps (in likely order)
 
@@ -260,7 +271,7 @@ These will bite you if you change code without knowing them:
   mid-training** (Kaggle can't serve intermediate weights — one kernel, cells run
   serially, and `kernels output` only publishes a COMMITTED run): with `--wandb`,
   training uploads `latest.pt` to W&B as a `latest`-aliased artifact every
-  `--wandb-ckpt-every N` iters (default 5); `run/pull_wandb.py --run NAME` fetches it
+  `--wandb-ckpt-every N` iters (default 2); `run/pull_wandb.py --run NAME` fetches it
   locally any time. `pull_kaggle.py` is the after-a-commit path; `pull_wandb.py` is
   the live path. The **dashboard**
   (`run/dashboard.py` static, or `/dashboard` live in `serve/backend.py`) reads

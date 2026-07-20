@@ -134,7 +134,7 @@ You do **not** have to wait for a run to finish to play the current bot — and 
 **can't** do it from a second Kaggle cell (the notebook runs one cell at a time, so
 a new cell just queues behind the training cell). The trick is the same push model
 as W&B metrics: when you train with `--wandb`, the process **uploads the checkpoint
-to W&B every few iterations** (`--wandb-ckpt-every N`, default 5) as a model
+to W&B every few iterations** (`--wandb-ckpt-every N`, default 2) as a model
 artifact aliased `latest`. You then fetch it to your Mac **any time**, decoupled
 from the training cell:
 

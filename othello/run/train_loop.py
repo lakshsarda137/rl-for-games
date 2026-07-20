@@ -250,7 +250,7 @@ def _write_records(records, out_dir, iteration):
 
 def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
           verbose=True, resume=None, use_wandb=False, wandb_project=None,
-          wandb_run=None, wandb_ckpt_every=5):
+          wandb_run=None, wandb_ckpt_every=2):
     """Run the loop for cfg.iterations more iterations; return (net, buffer, history).
 
     `resume` (a checkpoint path, or "auto"/"latest") continues an earlier run:
@@ -378,7 +378,7 @@ def main():
     ap.add_argument("--wandb-run", default=None, metavar="NAME",
                     help="W&B run name/id. Reuse the SAME name with --resume to "
                          "continue one live curve across sessions.")
-    ap.add_argument("--wandb-ckpt-every", type=int, default=5, metavar="N",
+    ap.add_argument("--wandb-ckpt-every", type=int, default=2, metavar="N",
                     help="with --wandb, upload the checkpoint to W&B every N iters so "
                          "you can pull + play the bot mid-training (0 = never).")
     ap.add_argument("--resume", default=None, metavar="CKPT",
