@@ -71,12 +71,15 @@ weights, optimizer state, and RNG state. Continue an interrupted run with:
 ```bash
 python run/train_loop.py --kaggle --resume auto             # newest checkpoint
 python run/train_loop.py --kaggle --resume data/checkpoints/iter0030.pt
+# on Kaggle, add the live dashboard and keep one continuous curve across sessions:
+python run/train_loop.py --kaggle --resume auto --wandb --wandb-run run1
 ```
 
 Iteration numbering and `metrics.jsonl` continue on one timeline, so `--iterations N`
 means "run N *more* iterations". (The replay buffer isn't checkpointed — it refills
 over the first 1-2 iterations.) This is what makes multi-session Kaggle runs work:
-download the latest checkpoint each session and `--resume` it the next.
+resume the latest checkpoint each session and, with the same `--wandb-run`, W&B keeps
+one live curve. Full Kaggle runbook: [`run/KAGGLE.md`](run/KAGGLE.md).
 
 ## Repository layout
 
