@@ -11,6 +11,7 @@
     --board-line: #0f5c31; --legal: #ffd34e;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }   /* .row{display:flex} would otherwise beat the UA [hidden] rule */
   body {
     margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
     background: var(--bg); color: var(--ink);
@@ -22,7 +23,10 @@
 
   /* ---- board ---- */
   .board {
-    display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px;
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);   /* square cells: rows must be 1fr too, not content-height */
+    gap: 3px;
     background: var(--board-line); padding: 10px; border-radius: 10px;
     width: min(88vw, 480px); aspect-ratio: 1;
     box-shadow: 0 10px 30px rgba(0,0,0,.4);
@@ -30,6 +34,7 @@
   .cell {
     background: var(--board); border: none; border-radius: 4px; padding: 0;
     position: relative; cursor: default; display: grid; place-items: center;
+    aspect-ratio: 1; min-width: 0; min-height: 0;   /* belt-and-braces squareness */
     transition: background .12s;
   }
   .cell.playable { cursor: pointer; }
@@ -91,6 +96,54 @@
   .speed input { flex: 1; }
   .hint { color: var(--muted); font-size: 12px; }
   a { color: var(--accent); }
+  .ckpt-row label { width: 52px; }
+
+  /* ---- arena spectate (parallel N-game match, watch any one live) ---- */
+  .arena-live {
+    width: min(96vw, 1000px); margin-top: 22px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+  }
+  .arena-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .arena-title { font-weight: 600; }
+  .arena-state {
+    font-size: 12px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); text-transform: capitalize;
+  }
+  .arena-state.running { color: #7fd18b; border-color: #2f6b3a; }
+  .arena-state.paused  { color: var(--legal); border-color: #7a5f14; }
+  .arena-state.done    { color: var(--accent); border-color: #245a86; }
+  .arena-state.stopped, .arena-state.error { color: #ff8a8a; border-color: #7a2a2a; }
+  .arena-ctrls { margin-left: auto; display: flex; gap: 8px; }
+  .arena-ctrls button { flex: 0 0 auto; padding: 6px 14px; }
+  .arena-bar { height: 6px; background: #0e1116; border-radius: 999px; margin: 12px 0 8px; overflow: hidden; }
+  .arena-bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .arena-tally { font-size: 14px; margin-bottom: 12px; }
+  .arena-body { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  .arena-focus { flex: 0 0 auto; }
+  .focus-label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .focus-board { width: min(72vw, 300px); }
+  .arena-grid { display: flex; flex-wrap: wrap; gap: 10px; flex: 1 1 320px; align-content: flex-start; }
+  .arena-tile { cursor: pointer; border-radius: 6px; padding: 4px; border: 2px solid transparent; }
+  .arena-tile:hover { border-color: var(--line); }
+  .arena-tile.focused { border-color: var(--accent); }
+  .arena-tile.won  { background: rgba(60,160,90,.15); }
+  .arena-tile.lost { background: rgba(200,70,70,.15); }
+  .arena-tile.drew { background: rgba(150,150,150,.12); }
+  .arena-tile .mini-board { width: 92px; }
+  .tile-cap { font-size: 11px; color: var(--muted); text-align: center; margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+  .mini-board {
+    display: grid; grid-template-columns: repeat(8,1fr); grid-template-rows: repeat(8,1fr);
+    gap: 1px; aspect-ratio: 1; background: var(--board-line); padding: 3px; border-radius: 5px;
+  }
+  .mini-cell {
+    background: var(--board); border-radius: 1px; display: grid; place-items: center;
+    position: relative; min-width: 0; min-height: 0;
+  }
+  .mini-cell.last { box-shadow: inset 0 0 0 2px var(--legal); }
+  .mini-cell .d { width: 74%; aspect-ratio: 1; border-radius: 50%; }
+  .mini-cell .d.black { background: radial-gradient(circle at 35% 30%, #444, #050505); }
+  .mini-cell .d.white { background: radial-gradient(circle at 35% 30%, #fff, #c8ccd2); }
 </style>
 </head>
 <body>
@@ -116,10 +169,18 @@
           <select id="blackType" aria-label="Black player type"></select>
           <input type="number" id="blackParam" min="1" max="30" value="1" aria-label="Black difficulty">
         </div>
+        <div class="row ckpt-row" id="blackCkptRow" hidden>
+          <label for="blackCkpt">ckpt</label>
+          <select id="blackCkpt" aria-label="Black AZ checkpoint"></select>
+        </div>
         <div class="row">
           <label for="whiteType">White</label>
           <select id="whiteType" aria-label="White player type"></select>
           <input type="number" id="whiteParam" min="1" max="30" value="4" aria-label="White difficulty">
+        </div>
+        <div class="row ckpt-row" id="whiteCkptRow" hidden>
+          <label for="whiteCkpt">ckpt</label>
+          <select id="whiteCkpt" aria-label="White AZ checkpoint"></select>
         </div>
       </fieldset>
 
@@ -138,23 +199,52 @@
       </fieldset>
 
       <fieldset id="arenaBox" hidden>
-        <legend>Arena — AZ net vs opponent (aggregate over N games)</legend>
+        <legend>Arena — AZ vs opponent · N games in parallel, watch live</legend>
+        <div class="row">
+          <label for="arenaChampCkpt" title="Which AZ checkpoint plays as the champion">AZ</label>
+          <select id="arenaChampCkpt" aria-label="AZ champion checkpoint"></select>
+          <input type="number" id="arenaSims" min="10" max="1000" value="80" title="MCTS simulations per move — higher = stronger, slower" aria-label="AZ sims per move">
+        </div>
         <div class="row">
           <label for="arenaOpp">Opp</label>
           <select id="arenaOpp" aria-label="Arena opponent"></select>
           <input type="number" id="arenaParam" value="2" aria-label="Opponent difficulty">
         </div>
+        <div class="row ckpt-row" id="arenaOppCkptRow" hidden>
+          <label for="arenaOppCkpt">Opp ckpt</label>
+          <select id="arenaOppCkpt" aria-label="Opponent AZ checkpoint"></select>
+        </div>
         <div class="row">
-          <label for="arenaSims" title="MCTS simulations per move — higher = stronger, slower">Sims</label>
-          <input type="number" id="arenaSims" min="10" max="1000" value="80" aria-label="AZ sims per move">
-          <label for="arenaGames" style="width:auto">Games</label>
+          <label for="arenaGames">Games</label>
           <input type="number" id="arenaGames" min="1" max="200" value="20" aria-label="Number of games">
+          <label for="arenaWorkers" style="width:auto" title="How many games play at once">Parallel</label>
+          <input type="number" id="arenaWorkers" min="1" max="8" value="6" aria-label="Parallel games">
         </div>
         <button class="ghost" id="arenaBtn" style="width:100%;margin-top:2px">Run match</button>
         <div class="hint" id="arenaOut" style="margin-top:8px" aria-live="polite"></div>
       </fieldset>
 
       <div class="hint" id="edaxHint"></div>
+    </div>
+  </div>
+
+  <div class="arena-live" id="arenaLive" hidden>
+    <div class="arena-head">
+      <div class="arena-title">Arena — <span id="alChampion">AZ</span> &nbsp;vs&nbsp; <span id="alOpp">opponent</span></div>
+      <div class="arena-state running" id="alState">running</div>
+      <div class="arena-ctrls">
+        <button class="ghost" id="alPause">Pause</button>
+        <button class="ghost" id="alStop">Stop</button>
+      </div>
+    </div>
+    <div class="arena-bar"><div class="arena-bar-fill" id="alBar"></div></div>
+    <div class="arena-tally" id="alTally"></div>
+    <div class="arena-body">
+      <div class="arena-focus">
+        <div class="focus-label" id="alFocusLabel">Game 1</div>
+        <div class="mini-board focus-board" id="alFocusBoard"></div>
+      </div>
+      <div class="arena-grid" id="alGrid"></div>
     </div>
   </div>
 
@@ -182,9 +272,10 @@ function fillSelect(sel, chosen) {
   }
 }
 function needsParam(type) { return type === "minimax" || type === "edax" || type === "az"; }
-function syncParam(typeSel, paramInput) {
+function syncParam(typeSel, paramInput, ckptRow) {
   const t = typeSel.value;
   paramInput.style.display = needsParam(t) ? "" : "none";
+  if (ckptRow) ckptRow.hidden = (t !== "az");
   paramInput.title = t === "az" ? "MCTS simulations per move — higher = stronger but slower"
     : t === "minimax" ? "search depth" : t === "edax" ? "Edax level" : "";
   if (t === "minimax") { paramInput.min = 1; paramInput.max = config.max_minimax_depth || 8; if (+paramInput.value > paramInput.max) paramInput.value = 4; }
@@ -195,12 +286,26 @@ function syncParam(typeSel, paramInput) {
       paramInput.value = config.default_az_sims || 120;
   }
 }
-function specOf(typeSel, paramInput) {
+function specOf(typeSel, paramInput, ckptSel) {
   const t = typeSel.value;
   if (t === "minimax") return "minimax:" + paramInput.value;
   if (t === "edax") return "edax:" + paramInput.value;
-  if (t === "az") return "az:" + paramInput.value;
+  if (t === "az") return "az:" + paramInput.value + "@" + (ckptSel ? ckptSel.value : "latest");
   return t;
+}
+
+// ---- checkpoint picker (load a specific past agent, not just latest) ----
+function ckptOptions() {
+  return (config.checkpoints || []).map(c =>
+    [c.label, c.is_latest ? `latest (iter ${c.iteration ?? "?"})` : `iter ${c.iteration}`]);
+}
+function fillCkptSelect(sel) {
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const [val, label] of ckptOptions()) {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label; sel.appendChild(o);
+  }
 }
 
 // ---- board ----
@@ -259,7 +364,9 @@ async function api(path, body) {
 
 async function newGame() {
   try {
-    const res = await api("/api/new", { black: specOf($("blackType"), $("blackParam")), white: specOf($("whiteType"), $("whiteParam")) });
+    const res = await api("/api/new", {
+      black: specOf($("blackType"), $("blackParam"), $("blackCkpt")),
+      white: specOf($("whiteType"), $("whiteParam"), $("whiteCkpt")) });
     gameId = res.game_id; state = res.state; paused = false; $("pauseBtn").textContent = "Pause";
     render(); tick();
   } catch (e) { $("status").textContent = "Could not start: " + e.message; }
@@ -302,12 +409,12 @@ $("pauseBtn").addEventListener("click", () => {
 });
 $("stepBtn").addEventListener("click", () => { if (state && !state.current_is_human) botMove(); });
 for (const side of ["black","white"]) {
-  $(side+"Type").addEventListener("change", () => syncParam($(side+"Type"), $(side+"Param")));
+  $(side+"Type").addEventListener("change", () => syncParam($(side+"Type"), $(side+"Param"), $(side+"CkptRow")));
 }
 
-// ---- arena (aggregate N-game match: AZ net vs a bot) ----
-function arenaOppOptions() {                       // bots only — no human, no az
-  return playerOptions().filter(([v]) => v !== "human" && v !== "az");
+// ---- arena: N games in PARALLEL, live tally + spectate any one, pause/stop ----
+function arenaOppOptions() {                       // any bot (incl. an AZ checkpoint) — no human
+  return playerOptions().filter(([v]) => v !== "human");
 }
 function fillArenaOpp() {
   const sel = $("arenaOpp"); sel.innerHTML = "";
@@ -320,41 +427,132 @@ function fillArenaOpp() {
 }
 function syncArenaParam() {
   const t = $("arenaOpp").value, p = $("arenaParam");
-  const need = t === "minimax" || t === "edax";
+  const need = t === "minimax" || t === "edax" || t === "az";
   p.style.display = need ? "" : "none";
-  if (t === "minimax") { p.min = 1; p.max = config.max_minimax_depth || 8; if (+p.value > p.max) p.value = 2; }
-  if (t === "edax") { p.min = 0; p.max = config.max_edax_level || 30; }
+  $("arenaOppCkptRow").hidden = (t !== "az");     // opponent AZ picks its own checkpoint
+  if (t === "minimax") { p.min = 1; p.max = config.max_minimax_depth || 8; if (+p.value > p.max || +p.value < 1) p.value = 2; }
+  if (t === "edax") { p.min = 0; p.max = config.max_edax_level || 30; if (+p.value > p.max) p.value = 6; }
+  if (t === "az") { p.min = config.min_az_sims || 10; p.max = config.max_az_sims || 1000;
+    if (+p.value < 10 || +p.value > 1000) p.value = 80; }
 }
 function arenaOppSpec() {
   const t = $("arenaOpp").value, p = $("arenaParam").value;
   if (t === "minimax") return "minimax:" + p;
   if (t === "edax") return "edax:" + p;
-  return t;
+  if (t === "az") return "az:" + (p || 80) + "@" + $("arenaOppCkpt").value;
+  return t;                                        // random / greedy
 }
-function fmtArena(j) {
-  const tally = `AZ ${j.wins}W ${j.losses}L ${j.draws}D`;
-  const wr = (j.win_rate * 100).toFixed(0) + "%";
-  if (j.error) return "Error: " + j.error;
-  return j.done
-    ? `Result vs ${j.opponent}: ${tally} over ${j.played} games — win rate ${wr}`
-    : `Playing ${j.played}/${j.total}… ${tally} (${wr})`;
+
+// mini-board rendering (reused by focus board + every game tile)
+function buildMini(container) {
+  container.innerHTML = ""; const cells = [];
+  for (let i = 0; i < 64; i++) { const c = document.createElement("div"); c.className = "mini-cell"; container.appendChild(c); cells.push(c); }
+  return cells;
 }
-let arenaTimer = null;
+function paintCells(cells, board, lastMove) {
+  for (let i = 0; i < 64; i++) {
+    const v = board[i];
+    cells[i].className = "mini-cell" + (i === lastMove ? " last" : "");
+    cells[i].innerHTML = v === BLACK ? '<span class="d black"></span>' : v === WHITE ? '<span class="d white"></span>' : "";
+  }
+}
+
+let arenaJob = null, arenaTimer = null, arenaFocus = 0;
+let arenaTiles = [], arenaFocusCells = [], arenaBuilt = false, arenaGames = [];
+
 async function startArena() {
-  clearInterval(arenaTimer);
+  stopArenaPolling();
   $("arenaBtn").disabled = true; $("arenaOut").textContent = "Starting…";
   try {
     const job = await api("/api/arena", {
-      opponent: arenaOppSpec(), games: +$("arenaGames").value, az_sims: +$("arenaSims").value });
-    arenaTimer = setInterval(async () => {
-      const r = await fetch("/api/arena/" + job.job_id);
-      if (!r.ok) { clearInterval(arenaTimer); $("arenaBtn").disabled = false;
-        $("arenaOut").textContent = "Arena job expired."; return; }
-      const j = await r.json();
-      $("arenaOut").textContent = fmtArena(j);
-      if (j.done) { clearInterval(arenaTimer); $("arenaBtn").disabled = false; }
-    }, 600);
+      opponent: arenaOppSpec(),
+      games: +$("arenaGames").value,
+      az_sims: +$("arenaSims").value,
+      az_ckpt: $("arenaChampCkpt").value,
+      workers: +($("arenaWorkers").value || 6),
+    });
+    arenaJob = job.job_id; arenaFocus = 0; arenaBuilt = false; arenaTiles = []; arenaGames = [];
+    $("arenaOut").textContent = "";
+    $("arenaLive").hidden = false;
+    $("arenaLive").scrollIntoView({ behavior: "smooth", block: "start" });
+    renderArena(job);
+    arenaTimer = setInterval(pollArena, 500);
   } catch (e) { $("arenaBtn").disabled = false; $("arenaOut").textContent = "Could not start: " + e.message; }
+}
+function stopArenaPolling() { if (arenaTimer) clearInterval(arenaTimer); arenaTimer = null; $("arenaBtn").disabled = false; }
+
+async function pollArena() {
+  if (!arenaJob) return;
+  const r = await fetch("/api/arena/" + arenaJob);
+  if (!r.ok) { stopArenaPolling(); $("arenaOut").textContent = "Arena job expired."; return; }
+  const j = await r.json();
+  renderArena(j);
+  if (j.done || j.error) stopArenaPolling();
+}
+
+function buildArenaTiles(n) {
+  const grid = $("alGrid"); grid.innerHTML = ""; arenaTiles = [];
+  for (let i = 0; i < n; i++) {
+    const tile = document.createElement("div"); tile.className = "arena-tile";
+    const bd = document.createElement("div"); bd.className = "mini-board";
+    const cells = buildMini(bd);
+    const cap = document.createElement("div"); cap.className = "tile-cap";
+    tile.appendChild(bd); tile.appendChild(cap);
+    tile.addEventListener("click", () => { arenaFocus = i; updateFocus(); });
+    grid.appendChild(tile);
+    arenaTiles.push({ cells, cap, tile });
+  }
+  arenaFocusCells = buildMini($("alFocusBoard"));
+  arenaBuilt = true;
+}
+
+function renderArena(j) {
+  $("alChampion").textContent = j.az_label || ("AZ " + (j.az_ckpt || "latest"));
+  $("alOpp").textContent = j.opp_label || j.opponent;
+  const st = j.error ? "error" : j.done ? (j.cancel ? "stopped" : "done") : (j.paused ? "paused" : "running");
+  $("alState").textContent = st; $("alState").className = "arena-state " + st;
+  $("alPause").textContent = j.paused ? "Resume" : "Pause";
+  $("alPause").disabled = !!j.done; $("alStop").disabled = !!j.done;
+
+  const played = j.played || 0, total = j.total || 1;
+  $("alBar").style.width = (100 * played / total).toFixed(1) + "%";
+  const wr = ((j.win_rate || 0) * 100).toFixed(0);
+  $("alTally").innerHTML = j.error ? ("Error: " + j.error)
+    : `<b>${j.wins}W&nbsp; ${j.losses}L&nbsp; ${j.draws}D</b> &nbsp;·&nbsp; win rate <b>${wr}%</b> &nbsp;·&nbsp; ${played}/${total} games finished`;
+
+  arenaGames = j.games || [];
+  if (!arenaBuilt && arenaGames.length) buildArenaTiles(arenaGames.length);
+  for (const g of arenaGames) updateTile(g);
+  updateFocus();
+}
+
+function updateTile(g) {
+  const t = arenaTiles[g.idx]; if (!t) return;
+  paintCells(t.cells, g.board, g.last_move);
+  const azc = g.az_is === BLACK ? "B" : "W";
+  let cap = `#${g.idx + 1} · AZ=${azc}`;
+  if (g.done) cap += g.aborted ? " · —" : ` · ${g.az_outcome}`;
+  t.cap.textContent = cap;
+  t.tile.classList.toggle("won", g.az_outcome === "W");
+  t.tile.classList.toggle("lost", g.az_outcome === "L");
+  t.tile.classList.toggle("drew", g.az_outcome === "D");
+  t.tile.classList.toggle("focused", g.idx === arenaFocus);
+}
+
+function updateFocus() {
+  if (!arenaFocusCells.length) return;
+  const g = arenaGames[arenaFocus]; if (!g) return;
+  paintCells(arenaFocusCells, g.board, g.last_move);
+  const azc = g.az_is === BLACK ? "Black" : "White";
+  const oc = g.done ? (g.aborted ? "aborted" : { W: "AZ won", L: "AZ lost", D: "draw" }[g.az_outcome]) : "in progress";
+  $("alFocusLabel").innerHTML = `Game ${g.idx + 1} — AZ plays <b>${azc}</b> &nbsp;·&nbsp; ${g.black_count}–${g.white_count} &nbsp;·&nbsp; ply ${g.ply} &nbsp;·&nbsp; ${oc}`;
+  arenaTiles.forEach((t, i) => t.tile.classList.toggle("focused", i === arenaFocus));
+}
+
+async function arenaControl(action) {
+  if (!arenaJob) return;
+  try { const j = await api("/api/arena/" + arenaJob + "/control", { action }); renderArena(j); }
+  catch (e) { $("arenaOut").textContent = e.message; }
 }
 
 // ---- init ----
@@ -363,14 +561,20 @@ async function startArena() {
   config = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
   fillSelect($("blackType"), "human");
   fillSelect($("whiteType"), "minimax");
-  syncParam($("blackType"), $("blackParam"));
-  syncParam($("whiteType"), $("whiteParam"));
+  for (const side of ["black", "white"]) fillCkptSelect($(side + "Ckpt"));
+  syncParam($("blackType"), $("blackParam"), $("blackCkptRow"));
+  syncParam($("whiteType"), $("whiteParam"), $("whiteCkptRow"));
   if (config.az_available) {
     $("arenaBox").hidden = false;
     $("arenaSims").value = config.default_az_sims ? Math.min(80, config.default_az_sims) : 80;
+    $("arenaWorkers").max = config.max_arena_workers || 8;
+    fillCkptSelect($("arenaChampCkpt"));
+    fillCkptSelect($("arenaOppCkpt"));
     fillArenaOpp();
     $("arenaOpp").addEventListener("change", syncArenaParam);
     $("arenaBtn").addEventListener("click", startArena);
+    $("alPause").addEventListener("click", () => arenaControl($("alPause").textContent === "Pause" ? "pause" : "resume"));
+    $("alStop").addEventListener("click", () => arenaControl("stop"));
   }
   const hints = [];
   hints.push(config.az_available
