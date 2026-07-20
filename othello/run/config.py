@@ -39,6 +39,13 @@ class Config:
                                      # workers all share one device and contend (net eval serialises
                                      # across processes), so >1 is SLOWER there (2.1→1.3 g/s on a T4).
                                      # Keep 1 on GPU; raise only when device='cpu'.
+    selfplay_torch: bool = False     # run array-ops self-play on the TORCH engine + MCTS
+                                     # (engine/board_torch.py + az/mcts_torch.py) instead of NumPy,
+                                     # so the whole search runs on `device` (the GPU on Kaggle), not
+                                     # just the network. Device-agnostic (CPU-correct on a Mac, meant
+                                     # for CUDA). One process — the multi-worker split is CPU-only.
+                                     # Pairs with a big games_per_iter (the port wants big batches).
+                                     # OPT-IN: measure it on a GPU before making it the default.
 
     # Replay buffer
     buffer_size: int = 200_000
@@ -86,18 +93,24 @@ class Config:
 
     @classmethod
     def kaggle(cls, **overrides):
-        """First real GPU run: the 5x64 net, sized to climb the ladder within one
-        free Kaggle session.
+        """GPU run for STRENGTH: the 10x128 net (up from 5x64), sized to climb the
+        ladder over a multi-session run.
+
+        Net size is the cheap lever: net compute lands on the GPU, which sits
+        ~73% idle on a T4 with tiny memory used, so a several-fold-bigger net is
+        nearly free here (its eval hides behind the CPU-bound search). A bigger net
+        raises the strength CEILING — but it also needs more iterations/data to fill
+        that capacity, so train longer (`--iterations`) to match. (Override the size
+        per session with `--net BxC`, e.g. `--net 5x64` to reproduce the old run.)
 
         Self-play runs the array-ops path (`selfplay_arrayops=True`): the whole
-        96-game batch is searched with batched engine + batched MCTS, so the
+        game batch is searched with the batched engine + batched MCTS, so the
         per-game Python overhead that dominated (batching the network alone left it
-        CPU-bound at ~0.4 games/sec) is gone. This is the real throughput lever and
-        should push max_depth_beaten toward depth-4; raise games_per_iter /
-        sims_selfplay for a longer, stronger run.
+        CPU-bound at ~0.4 games/sec) is gone. To move the SEARCH itself onto the GPU
+        (the remaining CPU wall), add `--selfplay-torch` with a big `--games` batch.
         """
         base = cls(
-            num_blocks=5, channels=64,          # the real network
+            num_blocks=10, channels=128,        # the real network (bigger = stronger ceiling)
             sims_selfplay=96, sims_eval=128,
             games_per_iter=96, temp_moves=12,
             selfplay_arrayops=True,             # array-ops self-play (batched engine + MCTS)

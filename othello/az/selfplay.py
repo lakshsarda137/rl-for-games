@@ -425,6 +425,101 @@ def _play_batch(evaluator, cfg, rng, num_games, iteration=0, make_records=False,
     return per_game
 
 
+def _play_batch_torch(evaluator, cfg, rng, num_games, iteration=0, make_records=False,
+                      add_noise=True):
+    """Torch twin of `_play_batch`: play `num_games` games as ONE batch, in
+    lockstep, with the whole search on TORCH tensors (`engine/board_torch.py` +
+    `az/mcts_torch.py`) instead of NumPy. Because those are device-agnostic torch,
+    the search runs wherever `evaluator.device` is — the GPU on Kaggle — so the
+    tree-search + game-rules (the CPU wall of the NumPy array-ops path) move onto
+    the device too, not just the network. Returns per-game (examples, record, plies).
+
+    The per-ply loop is identical to `_play_batch`; only the board state + search
+    moved to torch. Training examples are still built as NumPy (the replay buffer +
+    `_augment` are NumPy), converted once per ply at the recording boundary. Policy
+    forming + move sampling reuse `_play_batch`'s exact NumPy code driven by the
+    same `rng`, so with `add_noise=False` + greedy play it matches serial greedy
+    self-play move-for-move (`tests/test_az.py`)."""
+    import torch
+
+    import board_torch as bt
+    from mcts_torch import make_net_evaluator_torch, run_torch
+
+    device = evaluator.device
+    evaluate = make_net_evaluator_torch(evaluator.net, device)
+    boards = bt.initial_boards(num_games, device)
+    players = torch.full((num_games,), BLACK, dtype=torch.int8, device=device)
+    alive = ~bt.is_terminal(boards)
+
+    history = [[] for _ in range(num_games)]     # (planes, pi, mask, mover) per game
+    rec_moves = [[] for _ in range(num_games)] if make_records else None
+    ply = 0
+
+    while bool(alive.any()):
+        idx = torch.nonzero(alive, as_tuple=True)[0]
+        sub_boards, sub_players = boards[idx], players[idx].clone()
+        counts, root_vals = run_torch(sub_boards, sub_players, cfg.sims_selfplay,
+                                      evaluate, cfg, rng=rng, add_noise=add_noise)
+        counts_np = counts.cpu().numpy()
+        temperature = 1.0 if ply < cfg.temp_moves else 0.0
+        pis = _visit_policies(counts_np, temperature)
+        planes = bt.encode_batch(sub_boards, sub_players).cpu().numpy()
+        masks = (bt.legal_action_masks(sub_boards, sub_players) > 0).cpu().numpy()
+        sub_players_np = sub_players.cpu().numpy()
+
+        if temperature <= 1e-8:
+            moves = pis.argmax(1)
+        else:
+            u = rng.random(len(pis))
+            moves = (np.cumsum(pis, axis=1) < u[:, None]).sum(1)
+        moves = moves.astype(np.int64)
+
+        idx_list = idx.cpu().tolist()
+        root_vals_np = root_vals.cpu().numpy() if make_records else None
+        for j, g in enumerate(idx_list):
+            history[g].append((planes[j], pis[j], masks[j], int(sub_players_np[j])))
+            if make_records:
+                top = sorted(((int(a), float(pis[j, a])) for a in np.nonzero(pis[j])[0]),
+                             key=lambda x: -x[1])[:3]
+                rec_moves[g].append({
+                    "n": ply + 1, "player": "B" if sub_players_np[j] == BLACK else "W",
+                    "move": int(moves[j]), "mcts_value": round(float(root_vals_np[j]), 3),
+                    "top_policy": [[a, round(p, 3)] for a, p in top]})
+
+        boards[idx] = bt.apply_moves(sub_boards, sub_players,
+                                     torch.from_numpy(moves).to(device))
+        players[idx] = -players[idx]
+        ply += 1
+        newly_terminal = bt.is_terminal(boards[idx])
+        if make_records:
+            updated = boards[idx].cpu().numpy()   # only the k just-moved boards
+            for j, g in enumerate(idx_list):
+                rec_moves[g][-1]["board"] = [int(x) for x in updated[j].reshape(-1)]
+        alive[idx[newly_terminal]] = False
+
+    results = bt.winner(boards).cpu().numpy()
+    black_disc, white_disc = bt.count_discs(boards)
+    black_disc, white_disc = black_disc.cpu().numpy(), white_disc.cpu().numpy()
+    per_game = []
+    for g in range(num_games):
+        result = int(results[g])
+        examples = []
+        for planes_g, pi_g, mask_g, mover in history[g]:
+            z = 0.0 if result == 0 else (1.0 if result == mover else -1.0)
+            if cfg.augment:
+                examples.extend(_augment(planes_g, pi_g, mask_g, z))
+            else:
+                examples.append((planes_g, pi_g, mask_g, z))
+        record = None
+        if make_records:
+            margin = int(black_disc[g] - white_disc[g])
+            record = {"iteration": iteration, "kind": "selfplay",
+                      "result": f"{'+' if margin >= 0 else ''}{margin}",
+                      "plies": len(history[g]), "moves": rec_moves[g]}
+        per_game.append((examples, record, len(history[g])))
+    return per_game
+
+
 def _play_batch_parallel(evaluator, cfg, rng, num_games, workers,
                          iteration=0, make_records=False):
     """Run the array-ops path across `workers` processes — each vectorises its own
@@ -449,16 +544,28 @@ def generate_games(evaluator, cfg, rng, num_games, iteration=0, make_records=Fal
 
     Path selection (see the module docstring):
       * `cfg.selfplay_arrayops` (default) — the whole batch is searched with array
-        ops (`_play_batch`). With `cfg.selfplay_workers > 1` the games are split
-        across worker PROCESSES (`_play_batch_parallel`), each vectorising its own
-        sub-batch on its own CPU core — the "use every core" bump on top.
+        ops. `cfg.selfplay_torch` picks the TORCH engine + MCTS (`_play_batch_torch`),
+        which runs the whole search on `evaluator.device` (the GPU on Kaggle);
+        otherwise the NumPy array-ops path (`_play_batch`) runs on the CPU, and
+        `cfg.selfplay_workers > 1` splits it across worker PROCESSES
+        (`_play_batch_parallel`), each vectorising its own sub-batch on its own core.
       * else — the coroutine pool (`_play_pool`) or its multiprocess variant.
     The array-ops path couples games through `rng`; the pool paths seed each game
     independently (reproducible per seed), which the parity tests rely on.
     """
     workers = int(getattr(cfg, "selfplay_workers", 1) or 1)
-    if getattr(cfg, "selfplay_arrayops", False) and num_games > 1:
-        if workers > 1:
+    use_torch = getattr(cfg, "selfplay_torch", False)
+    # selfplay_torch is itself an array-ops path (torch engine + MCTS), so it takes
+    # the array-ops branch even if selfplay_arrayops (the NumPy flag) is off.
+    if (getattr(cfg, "selfplay_arrayops", False) or use_torch) and num_games > 1:
+        if use_torch:
+            # Torch (device-agnostic) array-ops: the whole search runs on tensors,
+            # so on a GPU it uses the device for the SEARCH itself, not just the net.
+            # One process (on a GPU that's optimal — one process, one big batch); the
+            # multi-worker split is a CPU-only lever and doesn't apply here.
+            per_game = _play_batch_torch(evaluator, cfg, rng, num_games,
+                                         iteration=iteration, make_records=make_records)
+        elif workers > 1:
             per_game = _play_batch_parallel(evaluator, cfg, rng, num_games,
                                             min(workers, num_games),
                                             iteration=iteration, make_records=make_records)

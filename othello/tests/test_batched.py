@@ -20,10 +20,12 @@ import torch
 
 import board_numpy as bn
 import board_batched as bb
+import board_torch as bt
 from encode import encode, legal_action_mask
 from network import Evaluator, OthelloNet
 from mcts import MCTS
 from mcts_batched import run_batched
+from mcts_torch import run_torch
 
 from harness import check, run
 
@@ -101,6 +103,70 @@ def test_batched_mcts_matches_serial():
     check(f"batched MCTS visit counts == serial, exactly ({n} positions)", ok)
 
 
+# --- torch port parity (device-agnostic; runs on CPU tensors here) -----------
+# board_torch / mcts_torch are the op-for-op torch re-expression of the NumPy
+# batched engine + MCTS, so the SEARCH can run on the GPU (not just the network).
+# They are checked against the SAME oracles (board_numpy, serial mcts.py). The
+# engine ops are integer/bool so they are bit-exact; the MCTS float32 math turns
+# out bit-exact vs NumPy on CPU too (verified below), so the tie-break argmax and
+# every visit count match the serial oracle exactly.
+
+def _torch_engine_parity(n_games):
+    pos = _positions(n_games)
+    boards = torch.from_numpy(np.stack([b for b, _ in pos]))
+    players = torch.from_numpy(np.array([p for _, p in pos], dtype=np.int8))
+    rng = np.random.default_rng(1)
+
+    tmask = bt.legal_action_masks(boards, players).cpu().numpy()
+    ok_mask = all(np.array_equal(tmask[i], legal_action_mask(b, p)) for i, (b, p) in enumerate(pos))
+    tenc = bt.encode_batch(boards, players).cpu().numpy()
+    ok_enc = all(np.array_equal(tenc[i], encode(b, p)) for i, (b, p) in enumerate(pos))
+    tterm = bt.is_terminal(boards).cpu().numpy()
+    ok_term = all(bool(tterm[i]) == bn.is_terminal(b) for i, (b, _) in enumerate(pos))
+    twin = bt.winner(boards).cpu().numpy()
+    ok_win = all(int(twin[i]) == bn.winner(b) for i, (b, _) in enumerate(pos))
+    chosen = np.array([bn.PASS if not bn.legal_moves(b, p) else int(rng.choice(bn.legal_moves(b, p)))
+                       for b, p in pos])
+    tnxt = bt.apply_moves(boards, players, torch.from_numpy(chosen)).cpu().numpy()
+    ok_apply = all(np.array_equal(tnxt[i], bn.apply_move(b, p, int(chosen[i])))
+                   for i, (b, p) in enumerate(pos))
+    return len(pos), (ok_mask, ok_enc, ok_term, ok_win, ok_apply)
+
+
+def _torch_mcts_parity(n_games, sims):
+    torch.manual_seed(0)
+    ev = Evaluator(OthelloNet(num_blocks=2, channels=16))
+    cfg = SimpleNamespace(c_puct=1.5, dirichlet_alpha=0.3, dirichlet_eps=0.25)
+    pos = [(b, p) for b, p in _positions(n_games) if not bn.is_terminal(b)]
+    boards = torch.from_numpy(np.stack([b for b, _ in pos]))
+    players = torch.from_numpy(np.array([p for _, p in pos], dtype=np.int8))
+
+    serial = [MCTS(ev, c_puct=1.5).run(b, int(p), sims, add_noise=False) for b, p in pos]
+
+    def looped(bs, ps):                    # bit-exact single-board eval (torch in/out)
+        bs_np, ps_np = bs.cpu().numpy(), ps.cpu().numpy()
+        out = [ev(np.ascontiguousarray(b, np.int8), int(p)) for b, p in zip(bs_np, ps_np)]
+        return (torch.from_numpy(np.stack([o[0] for o in out]).astype(np.float32)),
+                torch.from_numpy(np.array([o[1] for o in out], np.float32)))
+
+    counts, _ = run_torch(boards, players, sims, looped, cfg, add_noise=False)
+    counts = counts.cpu().numpy()
+    return len(pos), all(np.array_equal(counts[i], serial[i]) for i in range(len(pos)))
+
+
+def test_torch_engine_parity():
+    n, oks = _torch_engine_parity(6)
+    check(f"torch engine matches board_numpy exactly ({n} positions)", all(oks))
+
+
+def test_torch_mcts_matches_serial():
+    """The torch MCTS (which can run the whole search on the GPU) reproduces serial
+    MCTS visit counts EXACTLY on CPU tensors — same guarantee as the NumPy batched
+    version, so the GPU search plays the identical game."""
+    n, ok = _torch_mcts_parity(2, sims=12)
+    check(f"torch MCTS visit counts == serial, exactly ({n} positions)", ok)
+
+
 # --- wider sweeps (slow) -----------------------------------------------------
 def test_batched_engine_parity_wide():
     n, oks = _engine_parity(40)
@@ -112,8 +178,20 @@ def test_batched_mcts_matches_serial_wide():
     check(f"batched MCTS == serial over a wide sweep ({n} positions)", ok)
 
 
-FAST = [test_batched_engine_parity, test_batched_mcts_matches_serial]
-SLOW = [test_batched_engine_parity_wide, test_batched_mcts_matches_serial_wide]
+def test_torch_engine_parity_wide():
+    n, oks = _torch_engine_parity(40)
+    check(f"torch engine parity holds over a wide sweep ({n} positions)", all(oks))
+
+
+def test_torch_mcts_matches_serial_wide():
+    n, ok = _torch_mcts_parity(8, sims=48)
+    check(f"torch MCTS == serial over a wide sweep ({n} positions)", ok)
+
+
+FAST = [test_batched_engine_parity, test_batched_mcts_matches_serial,
+        test_torch_engine_parity, test_torch_mcts_matches_serial]
+SLOW = [test_batched_engine_parity_wide, test_batched_mcts_matches_serial_wide,
+        test_torch_engine_parity_wide, test_torch_mcts_matches_serial_wide]
 
 if __name__ == "__main__":
     run(FAST, SLOW, "batched")

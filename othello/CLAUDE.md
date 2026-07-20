@@ -68,31 +68,50 @@ runnable artifact. See `README.md` for structure.
   `--sims-eval N` override MCTS sims/move per session (for a low→high ramp across resumes).
 - **Most recent REAL run (2026-07-20): the user ran 25 iterations, `--sims 110`, `--wandb-run run1`,
   eval off, on a Kaggle T4.** So the pipeline is proven at real scale end-to-end (train → live W&B →
-  pull → play). This is still a SMALL-scale net (5×64) trained briefly, so it's a modest bot, not strong.
+  pull → play). This was a SMALL-scale net (5×64) trained briefly, so it's a modest bot, not strong.
+- **Scaling levers BUILT: 10×128 net + device-agnostic Torch search port ✅ (2026-07-20).** The two
+  "scaling for strength" items from the prior priority. **(a) Net bumped to 10×128** in
+  `Config.kaggle()` (was 5×64); `--net BxC` overrides per session (`--net 5x64` reproduces the old
+  run), `--games N` overrides `games_per_iter`. Net compute is on the idle GPU so it's ~free; a bigger
+  net raises the strength CEILING but needs more iterations to fill it — train longer to match.
+  **(b) `engine/board_torch.py` + `az/mcts_torch.py`** are the op-for-op Torch re-expression of the
+  NumPy batched engine + MCTS, so the SEARCH itself (not just the net) runs on `device`.
+  Device-agnostic torch, NOT PyCUDA — built + correctness-tested on the Mac with CPU tensors.
+  **Correctness EXHAUSTIVELY verified vs the same oracles:** torch engine bit-exact vs `board_numpy`
+  (2407 positions); torch MCTS visit counts bit-exact vs the serial `mcts.py` oracle (434 positions,
+  48 sims — the torch/numpy float32 math matches to the bit on CPU); torch self-play matches serial
+  greedy move-for-move AND is byte-identical to the NumPy array-ops path with noise+temperature
+  (`tests/test_batched.py`, `tests/test_az.py`, all green, FAST budget still <20s). Wired **OPT-IN**
+  via `--selfplay-torch` / `cfg.selfplay_torch` (`_play_batch_torch`); the NumPy array-ops path stays
+  the default. **⚠ GPU SPEED IS UNMEASURED** — the throughput payoff needs a Kaggle smoke; the port is
+  welded to a big `--games` batch (per-step op-launch cost is fixed regardless of batch size, so it
+  only amortises at large batch). Do NOT claim it's faster until measured on a GPU.
 
 ## Next steps (in likely order)
 
-> **▶ CURRENT PRIORITY (updated 2026-07-20): SCALING FOR STRENGTH — the next agent will (a) increase
-> the network size and (b) port the batched engine + MCTS from NumPy to Torch tensors on CUDA.**
-> Item 2 (resume + dashboard + load-to-play + Arena + W&B + a real run) is DONE, and the user has run a
-> 25-iter `--sims 110` `run1` on a T4. The honest verdict from that: at 5×64 / ~100 sims / few iterations
-> we're training only a MODEST bot. The two levers the user now wants, in this order of cheapness:
+> **▶ CURRENT PRIORITY (updated 2026-07-20): the two "scaling for strength" levers are BUILT + verified
+> on CPU — now MEASURE the Torch search on a GPU and RUN the bigger net for real.** Both prior-priority
+> items landed this session: (a) net bumped to **10×128** in `Config.kaggle()` (`--net BxC` to override,
+> `--games N` for batch size); (b) the batched engine + MCTS are ported to **device-agnostic Torch**
+> (`engine/board_torch.py`, `az/mcts_torch.py`), wired opt-in as **`--selfplay-torch`**, and
+> correctness-verified bit-for-bit against the NumPy/serial oracles on CPU (see the status bullet +
+> item 3). The open work now, in order:
 >
-> 1. **Increase net size (do this first — it's the cheap lever).** Bump `num_blocks`/`channels` in
->    `run/config.py` (`Config.kaggle()`), e.g. **10×128**. Net compute lands on the **GPU**, which sits
->    ~73% idle with ~177MB/15GB used — huge headroom, so a several-fold-bigger net is nearly free here
->    (net eval hides behind the CPU-bound search). A bigger net raises the strength ceiling; it also
->    NEEDS more iterations/data to fill that capacity, so scale net AND train longer together. (A `--net`
->    CLI override / new config preset would be a friendly addition; net size is config-only today.)
-> 2. **Port `board_batched` + `mcts_batched` to Torch-CUDA tensors (item 3 below).** This is the big one
->    and is now IN SCOPE (previously deferred). It's the only way to make sims / games-per-iter cheap
->    (they're CPU-bound today) and to use the idle GPU for the search itself. Read item 3 fully — esp.
->    that it's welded to running FAR bigger game batches, and it's device-agnostic Torch (build+test on
->    the Mac with CPU tensors, prove speed on Kaggle), NOT PyCUDA.
+> 1. **Smoke the Torch search on a Kaggle GPU and MEASURE g/s.** Run
+>    `python run/train_loop.py --kaggle --selfplay-torch --games N --device cuda` with a BIG `N` and
+>    compare g/s to the NumPy array-ops baseline (~2.1 g/s on a T4). The port is welded to a big batch
+>    (per-step op-launch cost is fixed regardless of games), so sweep `--games` up. **Big batch is
+>    NECESSARY, maybe not SUFFICIENT** — ~1M tiny op-launches/round set a floor only a real GPU run
+>    settles (op fusion via `torch.compile`/Triton is the escape hatch, hard with MCTS's dynamic control
+>    flow). If it wins: raise `--games` and consider making `selfplay_torch` the kaggle default. State
+>    honestly what the smoke does/doesn't show BEFORE running it (this user checks).
+> 2. **Train the 10×128 net for real, longer.** Bigger net = higher ceiling but needs more
+>    iterations/data — run more `--iterations` across resumed W&B sessions and watch strength climb.
 >
-> **Bottleneck cheat-sheet (established with the user 2026-07-20):** more **sims / more games → CPU**
-> (search+rules are NumPy on CPU, ~87% of self-play, the current wall). Bigger **net → GPU** (idle, cheap).
-> So scale the net now on the CPU path; the GPU port unlocks cheap sims/games later.
+> **Bottleneck cheat-sheet (unchanged):** more **sims / more games → CPU** on the NumPy path
+> (search+rules are NumPy, ~87% of self-play — the wall the Torch port targets). Bigger **net → GPU**
+> (idle, cheap — done). The Torch path aims to move the search itself onto the GPU so sims/games get
+> cheap there too — pending the g/s measurement above.
 
 1. **Self-play throughput — DONE.** Best GPU config is **single-process array-ops, ~2.1 g/s on a T4**
    (~5× the 0.4 baseline). `kaggle` config = array-ops, `selfplay_workers=1`. **On a GPU keep
@@ -140,29 +159,23 @@ runnable artifact. See `README.md` for structure.
      download the latest `data/checkpoints/latest.pt` (or `iter####.pt`) each session and
      `--resume auto` it next session; watch `max_depth_beaten` climb toward depth-4 on the dashboard.
      This is the payoff of all the throughput work.
-3. **▶ (NOW IN SCOPE — the next agent's task, after net-size) Port the batched engine + MCTS to
-   Torch-CUDA tensors.** (Previously deferred; the user has now asked for it.) The array-ops search is
-   NumPy = CPU; moving it to Torch tensors on `cuda` is the only path to use the idle GPU (~27%) and
-   scale with batch size. **What is/isn't the bottleneck (know this):** the *game play* (self-play) is
-   the bottleneck, and within it the **tree-search + game-rules** (`board_batched`/`mcts_batched`, NumPy)
-   is what's stuck on the CPU. The *network* work — both position eval during search AND the weight
-   updates in `train_steps` — is already on the GPU and is NOT the problem. So this port is specifically
-   about moving the search/rules to the GPU.
-   **The port is welded to running FAR more games at once** (hundreds–thousands, not 96): the per-op
-   launch overhead is fixed *per step* regardless of batch (step count = sims×moves×depth, independent of
-   games), so you want each step doing many more games. Bonus: on the GPU big batches are ~free, and more
-   games/iter is also a training-data plus (GPU mem is wide open, ~177MB/15GB). But **big batch is
-   NECESSARY, maybe not SUFFICIENT** — the ~1M tiny op-launches/round set a time floor that could dominate
-   even at large batch; only op fusion (`torch.compile`/Triton, hard with MCTS's dynamic control flow) or
-   a GPU experiment settles it. On the CURRENT CPU path, raising `games_per_iter` just costs proportionally
-   more time — big batches only pay off once the search is on the GPU.
-   **CORRECTION to earlier notes: this is device-agnostic Torch, buildable + correctness-testable on the
-   Mac (CPU tensors) — only its GPU *speed* needs Kaggle. NOT PyCUDA** (PyCUDA custom kernels are the
-   NVIDIA-only, resume-flex variant, a further step). The proven NumPy `board_batched`/`mcts_batched` are
-   the exact blueprint — port them op-for-op to Torch tensors and keep `tests/test_batched.py`'s parity
-   checks green against the NumPy oracles (device-agnostic, so run them on CPU tensors on the Mac).
-   **Sequencing: do the net-size bump FIRST (cheap GPU win, see the priority block), then this port** —
-   it only pays off with FAR bigger game batches, so land it together with a big `games_per_iter`.
+3. **Port the batched engine + MCTS to Torch tensors — ✅ BUILT + CPU-VERIFIED (2026-07-20); GPU speed
+   still to be measured.** `engine/board_torch.py` + `az/mcts_torch.py` are the op-for-op Torch
+   re-expression of `board_batched`/`mcts_batched`, so the tree-search + game-rules (the NumPy=CPU wall)
+   run on `device`. Self-play driver: `selfplay._play_batch_torch` (torch twin of `_play_batch`), opt-in
+   via `cfg.selfplay_torch` / `--selfplay-torch`; `make_net_evaluator_torch` keeps the net eval on-device
+   (no NumPy round-trip inside the search). **What is/isn't the bottleneck (still true):** the *search +
+   rules* were the CPU wall; the *network* (search eval + `train_steps` updates) was already on the GPU.
+   This port moves the search/rules onto the GPU too. **Device-agnostic Torch, NOT PyCUDA** — built and
+   correctness-tested on the Mac with CPU tensors (PyCUDA custom kernels would be the NVIDIA-only,
+   further step). Parity proven bit-for-bit vs the NumPy/serial oracles (engine on 2407 positions, MCTS
+   on 434 positions, self-play byte-identical to array-ops), `tests/test_batched.py` + `tests/test_az.py`.
+   **What's LEFT:** the GPU throughput measurement (priority item 1). The port is **welded to running FAR
+   more games at once** — the per-op launch overhead is fixed *per step* regardless of batch (step count
+   = sims×moves×depth, independent of games), so amortise it with a big `--games`. **Big batch is
+   NECESSARY, maybe not SUFFICIENT**: the ~1M tiny op-launches/round set a floor only a GPU run (or op
+   fusion via `torch.compile`/Triton, hard with dynamic MCTS control flow) settles. On the CPU path a
+   bigger batch just costs proportionally more, so the payoff is a GPU-only question — go measure it.
 4. **Wire self-play records into the web UI** (watch/replay mode; records already exist
    in `data/game_records/`).
 5. **Elo + promotion gating** in evaluation (currently just win-rate ladder).
@@ -217,18 +230,22 @@ These will bite you if you change code without knowing them:
 - **Deep minimax is slow** (pure Python; d6 ≈ 9s/move). Interactive but not snappy;
   the batched engine is the eventual fix. Bot moves in the web backend run in a
   threadpool so they don't block the server.
-- **Self-play has THREE interchangeable paths, all parity-verified against the serial
+- **Self-play has FOUR interchangeable paths, all parity-verified against the serial
   `mcts.py` oracle** (`cfg` selects; see `az/selfplay.py` module docstring):
   (1) coroutine pool `_play_pool` — per-game seeds, reproducible; the original
-  batched-inference path. (2) **array-ops `_play_batch` (DEFAULT)** — batched engine
+  batched-inference path. (2) **NumPy array-ops `_play_batch` (DEFAULT)** — batched engine
   (`engine/board_batched.py`) + batched MCTS (`az/mcts_batched.py`), all games searched in
-  lockstep as arrays; the fast one. (3) `cfg.selfplay_workers > 1` runs *either* across
-  spawn processes (one CPU core each). Keep `tests/test_batched.py` + the `test_az.py`
-  array-ops/parallel tests green — they pin every path to the serial oracle.
+  lockstep as arrays; the fast CPU one. (3) `cfg.selfplay_workers > 1` runs (1) or (2) across
+  spawn processes (one CPU core each). (4) **Torch array-ops `_play_batch_torch`** (opt-in,
+  `cfg.selfplay_torch`) — the same array-ops search but on torch tensors (`engine/board_torch.py`
+  + `az/mcts_torch.py`), so it runs on `device` (GPU). Keep `tests/test_batched.py` + the
+  `test_az.py` array-ops/parallel/torch tests green — they pin every path to the serial oracle.
 - **GOLDEN RULE for self-play changes: "vectorised" ≠ "on the GPU".** `board_batched` /
-  `mcts_batched` are **NumPy = CPU**; only the network (`Evaluator`) runs on-device. Batching
-  over games removes per-game Python overhead but does NOT move the search to the GPU. Getting
-  the search onto the GPU is a separate, unbuilt Torch-CUDA port (next-steps item 3).
+  `mcts_batched` are **NumPy = CPU** (still the DEFAULT); only the network (`Evaluator`) runs
+  on-device there. Batching over games removes per-game Python overhead but does NOT move the
+  search to the GPU. The Torch twins that DO put the search on-device — `board_torch` /
+  `mcts_torch`, opt-in via `--selfplay-torch` — now exist (built + CPU-verified 2026-07-20); their
+  GPU speed is still unmeasured. So: NumPy path = CPU search; Torch path = on-device search.
 - **`mcts.py` is a COROUTINE.** `run_root_gen` *yields* each leaf's `(board, player)` and gets
   `(priors, value)` back via `.send()`; serial `run`/`run_root` drive it with the single-board
   evaluator (so `az_player`/eval are unchanged), and the coroutine pool drives many at once. One

@@ -10,8 +10,10 @@ going:
   local web app / dashboard (`run/pull_kaggle.py`). This is for *playing* the finished
   model, not live monitoring.
 
-The good settings are baked into the **`--kaggle`** config: the 5×64 net, array-ops
+The good settings are baked into the **`--kaggle`** config: the 10×128 net, array-ops
 self-play in a **single process** (fastest on a shared GPU), eval off, 30 iterations.
+(A bigger net raises the strength ceiling but needs more iterations to fill — so plan
+a longer, multi-session run, or drop back to `--net 5x64` for the old quick config.)
 
 ## One-time setup
 
@@ -80,9 +82,20 @@ Run from the `othello/` dir. `--out /kaggle/working/az_data` keeps outputs toget
 | + strength curves | add `--eval-every 5` (win-rate / `max_depth_beaten` every 5 iters) |
 | Run more/fewer iters | add `--iterations N` (when resuming, N = N *more* iterations) |
 | Stronger training targets | add `--sims N` (MCTS sims/move in self-play; default 96). Higher = better targets, fewer games/sec |
+| Bigger/smaller net | add `--net BxC` (default `10x128`; `--net 5x64` = the old quick net) |
+| More games per iter | add `--games N` (self-play batch size; default 96) |
+| GPU search (experimental) | add `--selfplay-torch --games N` (runs the SEARCH on the GPU, not just the net; use a BIG N and compare g/s to the default) |
 
 The flags that matter:
-- **`--kaggle`** — the GPU config: 5×64 net, array-ops self-play, `workers=1`, eval off, 30 iters, `device=cuda`.
+- **`--kaggle`** — the GPU config: 10×128 net, array-ops self-play, `workers=1`, eval off, 30 iters, `device=cuda`.
+- **`--net BxC`** — override the network size (e.g. `--net 5x64` for the old net, `--net 10x128` = default).
+  Bigger = stronger ceiling but slower to fill; on **resume** the checkpoint's own architecture wins.
+- **`--games N`** — self-play games per iteration (default 96). Pair a big N with `--selfplay-torch`.
+- **`--selfplay-torch`** — run array-ops self-play on the **Torch** engine + MCTS so the whole *search*
+  runs on the GPU (the NumPy default keeps the search on the CPU; only the net is on-device). Correctness
+  is proven identical to the NumPy path; the **speed is experimental** — use a big `--games` batch (the
+  per-step cost is fixed regardless of batch, so it only amortises when many games run at once) and
+  compare the `g/s` line to a plain `--kaggle` run before trusting it.
 - **`--wandb [--wandb-run NAME]`** — stream metrics live to wandb.ai. Reuse the **same** NAME with `--resume` to continue **one** live curve across sessions.
 - **`--resume auto`** — continue the newest checkpoint (see next section). `--iterations N` then means N *more* iterations.
 - **`--eval-every N`** — minimax-ladder eval every N iters (**0 = off, the default**). It's inspection-only (never affects learning) and the slowest part of an iteration, so it's off by default; measure strength on demand with the web **Arena** instead, or turn it on here for live strength curves.
@@ -167,8 +180,10 @@ them for manual download if you'd rather not use the API.
 - **On a GPU keep `workers=1`.** `--workers >1` makes processes contend for the one
   shared GPU and is *slower* (measured 2.1→1.3 g/s at 4 workers on a T4); it only
   helps a `--device cpu` run. `--kaggle` already sets `workers=1`.
-- **Throughput:** the lever in place is array-ops self-play (~2.1 g/s on a T4, ~5×
-  the 0.4 baseline). The tree-search/rules math is still NumPy-on-CPU; moving it to
-  the GPU is future work (see CLAUDE.md next-steps item 3).
+- **Throughput:** the default lever is NumPy array-ops self-play (~2.1 g/s on a T4, ~5×
+  the 0.4 baseline), whose tree-search/rules math is NumPy-on-CPU (only the network is on
+  the GPU — the known ceiling). The **`--selfplay-torch`** path moves that search onto the
+  GPU too; it's correctness-proven but its speed is still to be measured (see CLAUDE.md
+  next-steps item 1) — that's the point of smoking it with a big `--games` and reading g/s.
 - **TensorBoard** stays off (protobuf clash in some images); `metrics.jsonl` + W&B
   are the metric sinks. `metrics.jsonl` is always the source of truth.
