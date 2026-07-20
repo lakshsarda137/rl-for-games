@@ -61,6 +61,35 @@ and it's the slowest part of an iteration, so training runs faster without it.
 Measure strength on demand instead (the web **Arena**, below). To turn it back on
 for a strength curve, add `--eval-every 5` (every 5th iteration) or `--eval-every 1`.
 
+## Watch training LIVE from your laptop (Weights & Biases)
+
+`pull_kaggle.py` gets you the *finished* model to play locally — it is NOT a live
+monitor (Kaggle only publishes output when a committed run finishes). To watch a
+run **as it trains**, the process has to push metrics out over the internet. That's
+what `--wandb` does: it streams each iteration to Weights & Biases, and you watch a
+real-time dashboard at wandb.ai from anywhere.
+
+One-time: make a free account at <https://wandb.ai>, copy your key from
+<https://wandb.ai/authorize>, and in the notebook add it as a **Secret**
+(*Add-ons → Secrets*, name it `WANDB_API_KEY`) — never paste the key into a cell.
+
+Then, instead of Cell 3:
+```python
+!pip install -q wandb                       # if the Kaggle image doesn't have it
+from kaggle_secrets import UserSecretsClient
+import os
+os.environ["WANDB_API_KEY"] = UserSecretsClient().get_secret("WANDB_API_KEY")
+
+!python run/train_loop.py --kaggle --wandb --wandb-run run1 --out /kaggle/working/az_data
+```
+The run prints its wandb.ai URL — open it on your laptop and the loss / speed
+curves update **every iteration, live**. Add `--eval-every 5` if you also want the
+strength (win-rate / max_depth_beaten) curves in that live view.
+
+Across sessions: reuse the **same** `--wandb-run run1` together with `--resume auto`
+and W&B continues the *same* live curve on one timeline. (W&B is only for watching
+— you still `pull_kaggle.py` the checkpoint down when you want to play the bot.)
+
 ## Getting your results back
 Everything is written under `/kaggle/working/az_data/`:
 - `checkpoints/iter####.pt` + `latest.pt` — the model (weights + optimizer + config)

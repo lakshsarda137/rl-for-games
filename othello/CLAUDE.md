@@ -169,7 +169,12 @@ These will bite you if you change code without knowing them:
   search depth, many-game matches, or deep perft in SLOW.
 - **Metrics: `data/metrics.jsonl` is the source of truth.** TensorBoard is broken
   in this environment (protobuf/tensorboard `GetPrototype` clash) so it's opt-in
-  (`--tensorboard`) and fully guarded. Don't rely on tb. The **dashboard**
+  (`--tensorboard`) and fully guarded. Don't rely on tb. **Weights & Biases** is the
+  LIVE remote view (`--wandb [--wandb-run NAME]`, same guarded pattern as tb): the
+  process pushes each iteration to wandb.ai over the internet, which is the ONLY way
+  to watch in-progress Kaggle training (pull/`kaggle kernels output` only publishes a
+  COMMITTED run's output at completion — push-from-inside vs pull-artifact). Reuse the
+  same `--wandb-run` with `--resume` to continue one live curve. The **dashboard**
   (`run/dashboard.py` static, or `/dashboard` live in `serve/backend.py`) reads
   this jsonl — both share ONE template `serve/frontend/dashboard.html`. If you add
   a metric, add it in `flat_metrics` (train_loop.py) AND as a chart/table column in

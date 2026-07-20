@@ -58,6 +58,10 @@ English what it measures and what "improving" looks like:
 - **Live** — start the web app (`python serve/backend.py`) and open
   <http://127.0.0.1:8000/dashboard>; it reads the jsonl through `/api/metrics` and
   auto-refreshes every 15s while training runs.
+- **Live from a remote GPU (Kaggle)** — add `--wandb` to stream each iteration to
+  Weights & Biases and watch a real-time dashboard at wandb.ai from your laptop.
+  This is the only way to see *in-progress* remote training (the local dashboard
+  needs the jsonl pulled down first). See `run/KAGGLE.md`.
 
 ## Resuming training across sessions
 

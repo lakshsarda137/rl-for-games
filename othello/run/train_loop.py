@@ -63,14 +63,21 @@ def flat_metrics(loss, buffer_len, games_per_sec, avg_len, evals):
 
 
 class MetricsLogger:
-    """Robust metrics sink: always writes metrics.jsonl; TensorBoard is optional.
+    """Robust metrics sink: always writes metrics.jsonl; TensorBoard + W&B optional.
 
-    TensorBoard/protobuf versions clash in some environments, so tb is off by
-    default and fully guarded — if it can't initialise, we note it once and keep
-    going on the jsonl log (which is always the source of truth).
+    metrics.jsonl is the source of truth and never fails. TensorBoard and Weights
+    & Biases are both fully guarded — if either can't initialise (not installed,
+    not logged in, protobuf clash), we note it once and keep going on the jsonl.
+
+    Weights & Biases is the LIVE remote view: the training process pushes each
+    iteration to W&B's servers over the internet, so you watch a real-time
+    dashboard at wandb.ai from anywhere (e.g. your laptop while training runs on
+    Kaggle) — no waiting for a run to finish and be pulled. Needs `pip install
+    wandb` and a WANDB_API_KEY (see run/KAGGLE.md).
     """
 
-    def __init__(self, out_dir, use_tb=False, append=False):
+    def __init__(self, out_dir, use_tb=False, append=False,
+                 use_wandb=False, wandb_project=None, wandb_run=None, config=None):
         # A fresh run truncates metrics.jsonl (start a clean timeline); a resume
         # appends, so the log continues the earlier run's iterations in one file.
         os.makedirs(out_dir, exist_ok=True)
@@ -87,6 +94,22 @@ class MetricsLogger:
                       "using metrics.jsonl. Pin a compatible protobuf to enable tb.")
                 self.tb = None
 
+        self.wandb = None
+        if use_wandb:
+            try:
+                import wandb
+                # id=name + resume="allow" continues the SAME W&B run across
+                # resumed sessions, so the curve stays one timeline (matching our
+                # iteration numbering). No name -> W&B auto-generates a fresh run.
+                self.wandb = wandb.init(project=wandb_project or "othello-alphazero",
+                                        id=wandb_run, name=wandb_run,
+                                        resume="allow", config=config)
+                print(f"[metrics] Weights & Biases live dashboard: {self.wandb.url}")
+            except Exception as exc:
+                print(f"[metrics] wandb disabled ({type(exc).__name__}: {exc}); "
+                      "using metrics.jsonl. Check `pip install wandb` + WANDB_API_KEY.")
+                self.wandb = None
+
     def log(self, iteration, metrics):
         self.jsonl.write(json.dumps({"iter": iteration, **metrics}) + "\n")
         self.jsonl.flush()
@@ -96,11 +119,21 @@ class MetricsLogger:
                     self.tb.add_scalar(name, value, iteration)
             except Exception:
                 self.tb = None  # give up on tb; jsonl keeps going
+        if self.wandb:
+            try:
+                self.wandb.log(metrics, step=iteration)
+            except Exception:
+                self.wandb = None  # give up on wandb; jsonl keeps going
 
     def close(self):
         self.jsonl.close()
         if self.tb:
             self.tb.close()
+        if self.wandb:
+            try:
+                self.wandb.finish()
+            except Exception:
+                pass
 
 
 def save_checkpoint(net, cfg, iteration, metrics, path, optimizer=None, rng=None):
@@ -191,7 +224,8 @@ def _write_records(records, out_dir, iteration):
 
 
 def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
-          verbose=True, resume=None):
+          verbose=True, resume=None, use_wandb=False, wandb_project=None,
+          wandb_run=None):
     """Run the loop for cfg.iterations more iterations; return (net, buffer, history).
 
     `resume` (a checkpoint path, or "auto"/"latest") continues an earlier run:
@@ -209,7 +243,9 @@ def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
     for d in (ckpt_dir, rec_dir):
         os.makedirs(d, exist_ok=True)
 
-    logger = MetricsLogger(out_dir, use_tb=use_tb, append=bool(resume)) if log else None
+    logger = MetricsLogger(out_dir, use_tb=use_tb, append=bool(resume),
+                           use_wandb=use_wandb, wandb_project=wandb_project,
+                           wandb_run=wandb_run, config=vars(cfg)) if log else None
 
     if resume:
         net, optimizer, start_iter, ckpt = load_for_resume(resume, cfg, ckpt_dir)
@@ -288,6 +324,14 @@ def main():
     ap.add_argument("--device", default=None, help="override device (cuda/cpu/auto)")
     ap.add_argument("--tensorboard", action="store_true",
                     help="also log to TensorBoard (needs a compatible protobuf)")
+    ap.add_argument("--wandb", action="store_true",
+                    help="also stream metrics live to Weights & Biases (needs "
+                         "`pip install wandb` + WANDB_API_KEY). Watch at wandb.ai.")
+    ap.add_argument("--wandb-project", default="othello-alphazero",
+                    help="W&B project name (default: othello-alphazero)")
+    ap.add_argument("--wandb-run", default=None, metavar="NAME",
+                    help="W&B run name/id. Reuse the SAME name with --resume to "
+                         "continue one live curve across sessions.")
     ap.add_argument("--resume", default=None, metavar="CKPT",
                     help="continue from a checkpoint: a path, or 'auto'/'latest' for "
                          "the newest in <out>/checkpoints. --iterations is then how "
@@ -313,7 +357,8 @@ def main():
     eval_note = "eval off" if cfg.eval_every == 0 else f"eval every {cfg.eval_every}"
     print(f"Training: {name} config, {cfg.iterations} {verb}, "
           f"device={resolve_device(cfg.device)}, {eval_note}")
-    train(cfg, out_dir=args.out, use_tb=args.tensorboard, resume=args.resume)
+    train(cfg, out_dir=args.out, use_tb=args.tensorboard, resume=args.resume,
+          use_wandb=args.wandb, wandb_project=args.wandb_project, wandb_run=args.wandb_run)
 
 
 if __name__ == "__main__":
