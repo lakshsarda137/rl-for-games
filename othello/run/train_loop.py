@@ -406,7 +406,16 @@ def main():
         except ValueError:
             ap.error(f"--net expects BLOCKSxCHANNELS (e.g. 10x128), got {args.net!r}")
     if args.games is not None:
+        # Train IN PROPORTION to the data ("linear with games"): scale the number of
+        # gradient steps AND the replay buffer by how much games/iter grew over the
+        # config's baseline. So more self-play => more training on it + a buffer that
+        # holds the same span of history — the extra positions actually get learned
+        # from instead of being under-trained and evicted early. Pass a bigger --games
+        # and steps/buffer follow automatically (baseline ratio ~2.6 steps/game).
+        ratio = args.games / cfg.games_per_iter
         cfg.games_per_iter = args.games
+        cfg.steps_per_iter = max(1, round(cfg.steps_per_iter * ratio))
+        cfg.buffer_size = max(1000, round(cfg.buffer_size * ratio))
     if args.selfplay_torch:
         cfg.selfplay_torch = True
     if args.sims is not None:
@@ -426,7 +435,8 @@ def main():
     print(f"Training: {name} config, {cfg.iterations} {verb}, "
           f"net {cfg.num_blocks}x{cfg.channels}, device={resolve_device(cfg.device)}, "
           f"{cfg.games_per_iter} games/iter, {cfg.sims_selfplay} self-play sims "
-          f"({sp_backend}), {eval_note}")
+          f"({sp_backend}), {cfg.steps_per_iter} train steps/iter, "
+          f"buffer {cfg.buffer_size}, {eval_note}")
     train(cfg, out_dir=args.out, use_tb=args.tensorboard, resume=args.resume,
           use_wandb=args.wandb, wandb_project=args.wandb_project, wandb_run=args.wandb_run,
           wandb_ckpt_every=args.wandb_ckpt_every)
