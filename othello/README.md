@@ -52,9 +52,9 @@ See `run/KAGGLE.md`.
 ## Watching training progress
 
 Every training iteration appends one JSON line to `data/metrics.jsonl` (loss,
-self-play speed, replay-buffer size, win rates, `max_depth_beaten`). Two ways to
-read it, both drawing the same annotated charts — each one explains in plain
-English what it measures and what "improving" looks like:
+self-play speed, replay-buffer size, win rates, `max_depth_beaten`). For a full
+plain-English guide to every chart — what it means and what "good" looks like —
+see [`graphs.md`](graphs.md). Three ways to read the metrics:
 
 - **Static** — `python run/dashboard.py` builds a self-contained `data/dashboard.html`
   (data embedded, no server). Ideal for a downloaded Kaggle run: grab `metrics.jsonl`
