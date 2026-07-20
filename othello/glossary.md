@@ -13,6 +13,9 @@ Terms marked ⭐ are the load-bearing concepts.
   hold black/white/empty) plus whose turn it is.
 - **Action / move** — placing a disc on a legal square (which flips the opponent's
   discs it brackets).
+- **Ply / half-move** — one player's single move (Black plays = 1 ply; White replies =
+  another ply). A "full move" = both players go = 2 plies. Search "depth d" means d plies
+  ahead (depth 4 = me → you → me → you).
 - **Legal moves** — in Othello you can only play where you'd flip at least one
   opponent disc. If you have none, you **pass**; if neither player can move, the game
   ends.
@@ -92,6 +95,15 @@ Terms marked ⭐ are the load-bearing concepts.
 
 > Note: classic MCTS estimates a leaf's value with random **rollouts** to the end.
 > AlphaZero replaces rollouts with the net's value head — faster and stronger.
+
+- **Search depth (minimax/Edax) vs simulation count (MCTS)** ⭐ — different *units*, not
+  interchangeable. Minimax **depth d** = a fixed horizon that checks **every** move **exactly
+  d plies** ahead (full-width brute force + alpha-beta), scoring leaves with a hand-written
+  heuristic; cost explodes with depth. MCTS **sims N** = a **budget of N selective probes**,
+  each following the net's intuition **as deep as the line stays promising** (variable depth,
+  guided), scoring leaves with the net's value head; cost is linear in N. **Depth measures
+  reach; sims measure effort** — so "minimax d4" and "AZ 80 sims" are not comparable settings,
+  and MCTS is only as strong as the net guiding it (sims amplify the net's judgment).
 
 ## 5. The training loop (AlphaZero-style) ⭐
 

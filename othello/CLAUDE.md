@@ -162,23 +162,42 @@ runnable artifact. See `README.md` for structure.
   game-wins), a **matches grid** (pending/live/done + score + winner), and a **spectate panel** reusing the
   game-viewer (focus board + clickable game tiles) for whichever match you click. Backend tested end-to-end
   (round-robin count, concurrent live matches, 3/1.5/0 scoring, tiebreak); UI screenshot-verified.
+- **Run-labels + training tweaks (2026-07-20).** (a) Dropdowns/scoreboard/tournament labels now show the RUN
+  for archived pulls (`AZ · run2 · iter 14`), parsed from the `<run>-iterNN` filename (`ckptLabelText` /
+  `prettySpec` / `_pretty_label`); plain `iterNNNN` and `latest` unchanged. (b) `--resume auto` now falls back
+  to `latest.pt` when there's no `iterNNNN.pt` in the dir (so bringing a single rolling checkpoint back into a
+  fresh Kaggle session resumes cleanly — the common W&B/pull path). (c) **`--games N` now scales `steps_per_iter`
+  + `buffer_size` LINEARLY** with N over the config baseline (~2.6 steps/game): more self-play is actually
+  trained on and kept in memory the same span, instead of under-trained/evicted. `batch_size` deliberately left
+  fixed so total training stays ~linear (2×), not ~4×. The startup line prints the resulting steps/iter + buffer.
+- **Training reality as of iter49 (run2) — the honest strength picture (2026-07-20).** run1 = **5×64 × 25 iters**;
+  run2 = **10×128**, resumed to **iter49** (25+25, sims 110→120, 96 games/iter). A **40-game/match** tournament
+  (the noise-robust read — 12-game matches were coin-flips) shows: **run2's 10×128 clearly BEATS run1's 5×64**
+  (iter24 beat run1-iter25 **26–13**) — the bigger net paid off — BUT **iter24 ≈ iter49** (20–18, and 9 vs 10
+  wins vs Edax): the **second batch (24→49) PLATEAUED**, matching the flat loss curves. **All AZ nets lose badly
+  to Edax L2** (~29–9): Edax is the ceiling, far above one-T4 compute. **Lessons that keep recurring — measure
+  right:** loss ≠ strength (it's fit to the net's own MOVING self-play targets; not comparable across runs);
+  judge strength by games vs a FIXED yardstick (Minimax/Edax) with **40+ games**, never training loss, never
+  10-game matches (noise), never head-to-head alone (non-transitive rock-paper-scissors cycles seen repeatedly).
+  **Diagnosis: the plateau is a data-starved bigger net + no LR decay, NOT a bug** (it still beats the weak
+  baselines and the smaller net). **Next experiment:** resume iter49 with `--games 200` (auto-scales steps/buffer)
+  + `--sims ~130–150`, judge iter49-vs-iter74 on Edax. **LR decay is NOT in the code** (`make_optimizer` = plain
+  Adam, constant `lr=1e-3`, no scheduler) — that's the next lever if more-data still plateaus (needs checkpoint
+  persistence of the scheduler state for cross-session resume).
 
 ## Next steps (in likely order)
 
-> **▶ CURRENT PRIORITY (updated 2026-07-20): a real 10×128 training run is IN PROGRESS on the NumPy
-> path; next work is WEB-APP / BENCHMARK polish while it trains.** The scaling exploration is settled:
-> net bumped to 10×128, Torch search port built + measured on a T4 and PARKED (op-launch-bound, ~2 g/s
-> ceiling — see the status bullets; decision: train on NumPy). The first real run is
-> `--kaggle --sims 110 --iterations 30 --wandb --wandb-run run2` (96 games/iter, from scratch). Open work:
->
-> 1. **Let the run train; watch strength.** ~2 g/s on a T4 → a 30-iter run is well under an hour.
->    Watch loss/g/s live on wandb.ai; pull to play mid-training. Resume across sessions with the SAME
->    `--wandb-run run2` + `--resume auto` for a longer run. Strength = net size × iterations.
-> 2. **Web app + benchmark polish (user asked, 2026-07-20) — DONE 2026-07-20, verified before run2.** All
->    three asks shipped (see the "Web-app polish DONE" status bullet + next-steps 4–5): board aspect-ratio
->    FIXED; Arena now parallel + spectate-any-game + pause/stop; checkpoint picker (`az:<sims>@<ckpt>`) on the
->    play UI and both Arena sides. **Still open:** spectate/replay of `data/game_records/*.json` (item 4) and
->    Elo instead of the raw win-rate ladder (item 5); a general design pass (item 6).
+> **▶ CURRENT PRIORITY (updated 2026-07-20): web-app + tournament tooling is DONE; run2 reached iter49 and
+> the SECOND training batch PLATEAUED.** See the "Training reality as of iter49" status bullet for the numbers.
+> The scaling exploration is settled (10×128 net; Torch search port PARKED — op-launch-bound ~2 g/s on a T4;
+> train on NumPy). **Next move = a data-starvation experiment:** resume run2 from iter49 with `--games 200`
+> (now auto-scales `steps_per_iter`+`buffer_size`) and `--sims ~130–150`, then judge **iter49-vs-iter74 vs
+> Edax/Minimax with 40+ games** (NOT loss, NOT 10-game head-to-heads). If it still plateaus, add **LR decay**
+> (not in the code yet — constant Adam `lr=1e-3`; needs scheduler-state persistence in the checkpoint for
+> cross-session resume). Shipped web/benchmark tooling: rebuilt play UI, parallel spectate-able Arena,
+> checkpoint picker + **Models (delete)** card, non-destructive `pull_wandb` archival, and a **round-robin
+> tournament** (`/tournament`). **Still open:** spectate/replay of `data/game_records/*.json`, Elo instead of
+> the win-rate ladder, and LR decay.
 >
 > **Bottleneck cheat-sheet (settled):** more **sims / more games → CPU** on the NumPy path (search+rules
 > are NumPy, ~87% of self-play). Bigger **net → GPU** (cheap). The Torch port moved the search onto the
