@@ -100,6 +100,21 @@ runnable artifact. See `README.md` for structure.
 - **First real 10×128 run (2026-07-20): from scratch, `--kaggle --sims 110 --iterations 30 --wandb
   --wandb-run run2`, 96 games/iter, eval off, NumPy array-ops on a T4.** The proper strength run:
   bigger net + more sims + live W&B. Watch on wandb.ai; `pull_wandb.py --run run2` to play mid-training.
+- **Web-app polish DONE (2026-07-20), visually verified before run2 — see next-steps 4–5.** Three asks,
+  all in `serve/`: **(a) board aspect-ratio bug FIXED** — `.board` grid had `grid-template-columns` but
+  no `grid-template-rows`, so cells were content-height rectangles; added `grid-template-rows:repeat(8,1fr)`
+  (+ `aspect-ratio:1` on `.cell`). **GOTCHA hit + fixed:** the per-side checkpoint `.row.ckpt-row`s stayed
+  visible when hidden because author `.row{display:flex}` beats the UA `[hidden]{display:none}` — added a
+  global `[hidden]{display:none!important}`. **(b) Arena overhauled** — was N games sequential in one thread
+  with only a tally; now runs games **concurrently in a `ThreadPoolExecutor`** (threads, not procs: the point
+  is shared live state for spectating + the net eval frees the GIL), each game **publishes its live board**
+  into the job dict so the UI shows a **grid of mini-boards + a focus board you click to watch any one**, plus
+  **pause/resume/stop** (`POST /api/arena/{id}/control`; games check flags between moves). **(c) Checkpoint
+  picker** — `/api/config` now returns `checkpoints:[{label,iteration,is_latest}]`; AZ player spec extended
+  to **`az:<sims>@<ckpt>`** (`az`, `az:80`, `az@iter0007`, `az:80@iter0007`; parsed by `_parse_az_spec`,
+  resolved by `checkpoint_path`), so you can load a SPECIFIC past iter as a player and Arena iterN-vs-iterM /
+  vs-edax. Backend end-to-end tested (parallel/spectate/pause/stop, bad-ckpt→400); board+picker+spectate
+  screenshotted. **Backend must be launched from `othello/`** (sys.path sibling imports) — `python serve/backend.py`.
 
 ## Next steps (in likely order)
 
@@ -112,12 +127,11 @@ runnable artifact. See `README.md` for structure.
 > 1. **Let the run train; watch strength.** ~2 g/s on a T4 → a 30-iter run is well under an hour.
 >    Watch loss/g/s live on wandb.ai; pull to play mid-training. Resume across sessions with the SAME
 >    `--wandb-run run2` + `--resume auto` for a longer run. Strength = net size × iterations.
-> 2. **Web app + benchmark polish (user asked, 2026-07-20)** — see next-steps items 4–6. The concrete
->    asks: (a) the Othello board renders with non-square cells (aspect-ratio CSS bug) — first + cheap;
->    (b) the **Arena** (N-game match) needs pause/stop, live **spectate**, and games run **in parallel**
->    with the option to watch any one of the N; (c) a way to **benchmark past checkpoints** head-to-head
->    (see item 5 — checkpoints already persist per-iter; the gap is loading a SPECIFIC one as a player).
->    Do these as focused work WITH visual verification (launch the app + screenshot), not blind edits.
+> 2. **Web app + benchmark polish (user asked, 2026-07-20) — DONE 2026-07-20, verified before run2.** All
+>    three asks shipped (see the "Web-app polish DONE" status bullet + next-steps 4–5): board aspect-ratio
+>    FIXED; Arena now parallel + spectate-any-game + pause/stop; checkpoint picker (`az:<sims>@<ckpt>`) on the
+>    play UI and both Arena sides. **Still open:** spectate/replay of `data/game_records/*.json` (item 4) and
+>    Elo instead of the raw win-rate ladder (item 5); a general design pass (item 6).
 >
 > **Bottleneck cheat-sheet (settled):** more **sims / more games → CPU** on the NumPy path (search+rules
 > are NumPy, ~87% of self-play). Bigger **net → GPU** (cheap). The Torch port moved the search onto the
@@ -189,21 +203,22 @@ runnable artifact. See `README.md` for structure.
    NECESSARY, maybe not SUFFICIENT**: the ~1M tiny op-launches/round set a floor only a GPU run (or op
    fusion via `torch.compile`/Triton, hard with dynamic MCTS control flow) settles. On the CPU path a
    bigger batch just costs proportionally more, so the payoff is a GPU-only question — go measure it.
-4. **Web app — the user's concrete asks (2026-07-20), do these WITH visual verification:**
-   - **Board aspect-ratio bug** — cells render as rectangles, not squares (some square, some not). CSS
-     fix in `serve/frontend/index.html` (enforce `aspect-ratio:1` / square grid). Cheapest + most visible.
-   - **Arena controls** — the N-game match (`POST /api/arena`, runs sequentially in a bg thread) has NO
-     pause/stop and reports only a tally. Add: cancel/stop, and **spectate** (expose per-game live board
-     state; currently only aggregate progress). Then run the N games **in parallel** and let the user
-     watch any one of the N live. Backend (`serve/backend.py` arena job) + frontend both change.
-   - **Spectate self-play records** — watch/replay mode from `data/game_records/*.json` (records exist,
-     UI not built).
-5. **Benchmark past checkpoints head-to-head + Elo/promotion gating.** Checkpoints ALREADY persist every
-   iteration (`data/checkpoints/iterNNNN.pt`; W&B uploads every `--wandb-ckpt-every` iters aliased
-   `iterN`), so past agents are saved. The GAP: the web app / Arena loads only `latest.pt`
-   (`latest_checkpoint`) — add a picker to load a SPECIFIC checkpoint as a player (e.g. `az:iter0010`)
-   so you can Arena iterN vs iterM vs edax and chart a strength curve. Then Elo instead of a raw win-rate
-   ladder.
+4. **Web app — the user's concrete asks (2026-07-20). Board + Arena ✅ DONE 2026-07-20; records-replay OPEN.**
+   - **Board aspect-ratio bug ✅ DONE** — `.board` grid had no `grid-template-rows`, so cells were
+     content-height rectangles; added `grid-template-rows:repeat(8,1fr)` + `aspect-ratio:1` on `.cell`, and a
+     global `[hidden]{display:none!important}` (author `.row{display:flex}` was overriding the UA hidden rule).
+   - **Arena controls ✅ DONE** — games now run **concurrently** (`ThreadPoolExecutor`, `--workers`/`max 8`),
+     each **publishes its live board** into the job dict (`job["games"][i]`), and the UI shows a **mini-board
+     grid + clickable focus board** to watch any one, plus **pause/resume/stop** via `POST /api/arena/{id}/control`
+     (games poll `job["cancel"]`/`job["paused"]` between moves). Threads not procs — the point is shared live
+     state + the net eval frees the GIL. `_ARENA_PRIV` holds the non-JSON sidecar (factories/lock/openings).
+   - **Spectate self-play records — STILL OPEN** — watch/replay mode from `data/game_records/*.json` (records
+     exist, UI not built). The Arena mini-board renderer in `index.html` is the reusable piece to build on.
+5. **Benchmark past checkpoints ✅ (picker DONE 2026-07-20); Elo/promotion gating STILL OPEN.** The picker
+   shipped: `/api/config` returns `checkpoints[]`, the AZ spec is now `az:<sims>@<ckpt>` (e.g. `az:80@iter0007`,
+   `az@iter0003`; `_parse_az_spec`/`checkpoint_path`), the play UI has a per-side ckpt dropdown, and the Arena
+   lets BOTH sides pick a checkpoint — so you can Arena iterN vs iterM vs edax now. **Left:** an Elo rating
+   from those head-to-heads instead of the raw win-rate ladder, and a strength-curve chart.
 6. **General web-UI polish / design pass** — the user finds it visually rough beyond the board bug.
 
 ## Non-obvious architectural decisions
