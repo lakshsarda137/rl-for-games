@@ -109,6 +109,9 @@ class MetricsLogger:
                 print(f"[metrics] wandb disabled ({type(exc).__name__}: {exc}); "
                       "using metrics.jsonl. Check `pip install wandb` + WANDB_API_KEY.")
                 self.wandb = None
+        # Artifact name for uploaded checkpoints; equals the run name so a local
+        # `pull_wandb.py --run NAME` can find it (falls back to "checkpoint").
+        self._ckpt_name = wandb_run or "checkpoint"
 
     def log(self, iteration, metrics):
         self.jsonl.write(json.dumps({"iter": iteration, **metrics}) + "\n")
@@ -124,6 +127,26 @@ class MetricsLogger:
                 self.wandb.log(metrics, step=iteration)
             except Exception:
                 self.wandb = None  # give up on wandb; jsonl keeps going
+
+    def log_checkpoint(self, path, iteration):
+        """Upload a checkpoint to W&B as a versioned artifact (alias 'latest').
+
+        This is what lets you PLAY the bot mid-training: the running process pushes
+        the current weights to W&B, and `run/pull_wandb.py` (or the W&B UI) fetches
+        them from your laptop at any time — no waiting for the run to finish, no
+        second Kaggle cell. No-op unless W&B is active; never breaks training.
+        """
+        if not self.wandb or not os.path.isfile(path):
+            return
+        try:
+            import wandb
+            art = wandb.Artifact(self._ckpt_name, type="model",
+                                 metadata={"iteration": iteration})
+            art.add_file(path, name="latest.pt")
+            self.wandb.log_artifact(art, aliases=["latest", f"iter{iteration}"])
+        except Exception as exc:
+            print(f"[metrics] wandb checkpoint upload skipped "
+                  f"({type(exc).__name__}: {exc})")
 
     def close(self):
         self.jsonl.close()
@@ -225,7 +248,7 @@ def _write_records(records, out_dir, iteration):
 
 def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
           verbose=True, resume=None, use_wandb=False, wandb_project=None,
-          wandb_run=None):
+          wandb_run=None, wandb_ckpt_every=5):
     """Run the loop for cfg.iterations more iterations; return (net, buffer, history).
 
     `resume` (a checkpoint path, or "auto"/"latest") continues an earlier run:
@@ -294,8 +317,12 @@ def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
                             optimizer=optimizer, rng=rng)
             # A stable name for the newest checkpoint, so `--resume` and
             # load-to-play don't need to know the iteration number.
-            save_checkpoint(net, cfg, it, row, os.path.join(ckpt_dir, "latest.pt"),
-                            optimizer=optimizer, rng=rng)
+            latest_path = os.path.join(ckpt_dir, "latest.pt")
+            save_checkpoint(net, cfg, it, row, latest_path, optimizer=optimizer, rng=rng)
+            # Push the current weights to W&B every N iters so you can pull + play
+            # the bot mid-training (no-op unless --wandb). See run/pull_wandb.py.
+            if logger and wandb_ckpt_every and it % wandb_ckpt_every == 0:
+                logger.log_checkpoint(latest_path, it)
 
             if verbose:
                 wr = (" | " + " ".join(f"d{d}:{w:.0%}" for d, w in evals["winrate"].items())
@@ -332,6 +359,9 @@ def main():
     ap.add_argument("--wandb-run", default=None, metavar="NAME",
                     help="W&B run name/id. Reuse the SAME name with --resume to "
                          "continue one live curve across sessions.")
+    ap.add_argument("--wandb-ckpt-every", type=int, default=5, metavar="N",
+                    help="with --wandb, upload the checkpoint to W&B every N iters so "
+                         "you can pull + play the bot mid-training (0 = never).")
     ap.add_argument("--resume", default=None, metavar="CKPT",
                     help="continue from a checkpoint: a path, or 'auto'/'latest' for "
                          "the newest in <out>/checkpoints. --iterations is then how "
@@ -358,7 +388,8 @@ def main():
     print(f"Training: {name} config, {cfg.iterations} {verb}, "
           f"device={resolve_device(cfg.device)}, {eval_note}")
     train(cfg, out_dir=args.out, use_tb=args.tensorboard, resume=args.resume,
-          use_wandb=args.wandb, wandb_project=args.wandb_project, wandb_run=args.wandb_run)
+          use_wandb=args.wandb, wandb_project=args.wandb_project, wandb_run=args.wandb_run,
+          wandb_ckpt_every=args.wandb_ckpt_every)
 
 
 if __name__ == "__main__":
