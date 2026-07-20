@@ -35,16 +35,31 @@ Training on a free Kaggle GPU: see [`run/KAGGLE.md`](run/KAGGLE.md).
 
 ## Playing / measuring the trained net
 
-Start the web app (`python serve/backend.py`) and pick **"AZ net"** for either
-side to play the latest trained checkpoint against yourself or any bot. The
-**Arena** panel there runs an N-game, colour-alternated match of the net vs a bot
-of your choice and reports aggregate win/draw/loss + win rate — a far more reliable
-strength read than a single game. (In-training minimax eval is inspection-only and
-**off by default** in the Kaggle config; the Arena is the on-demand replacement.)
+Start the web app (`python serve/backend.py`, run from the `othello/` dir) — it serves:
 
-To play a model trained on Kaggle locally, pull it down first:
-- **Mid-training (any time, no waiting)** — `python run/pull_wandb.py --run run1`
-  grabs the current checkpoint that training uploads to W&B every few iterations.
+- **Play** (`/`) — pick any player for Black/White; **each trained checkpoint is its own
+  option** (e.g. `AZ · run2 · iter 14`), alongside Minimax at any depth, Edax, random, and
+  greedy. Play them yourself or watch two bots. The scoreboard shows which agent is which colour.
+- **Arena** (in the play page, when a model is loaded) — an N-game, colour-alternated match
+  of the net vs any bot, run **in parallel** with a live **spectate** view (watch any single
+  game move-by-move) and pause / resume / stop. Reports aggregate win/draw/loss + win rate — a
+  far more reliable strength read than one game.
+- **Tournament** (`/tournament`) — a round-robin: add ≥2 bots (any checkpoint / minimax / edax
+  / random / greedy), set games-per-match + concurrency, and get a live **points table**
+  (match win 3 · draw 1.5 · loss 0; tiebreaker = total game wins) with a live match/game viewer.
+- **Models** card — delete checkpoints you don't want from the picker (soft-delete to
+  `data/checkpoints/_trash/`, recoverable).
+- **Dashboard** (`/dashboard`) — the training-metrics charts.
+
+(In-training minimax eval is inspection-only and **off by default** in the Kaggle config; the
+Arena / Tournament are the on-demand strength checks. Judge real strength on a fixed yardstick —
+Minimax/Edax — with 40+ games; **not** training loss, which measures fit to the net's own moving
+self-play targets, not playing strength.)
+
+To play a Kaggle-trained model locally, pull it down first:
+- **Mid-training (any time, no waiting)** — `python run/pull_wandb.py --run run2` grabs the
+  checkpoint W&B uploads every couple of iterations, installing `latest.pt` **and** a stable
+  archival copy `<run>-iterNN.pt` (so repeated pulls never clobber an earlier model).
 - **After a committed run** — `python run/pull_kaggle.py --kernel <user>/<slug>`.
 
 See `run/KAGGLE.md`.
@@ -69,15 +84,19 @@ see [`graphs.md`](graphs.md). Three ways to read the metrics:
 
 ## Resuming training across sessions
 
-Checkpoints (`data/checkpoints/iterNNNN.pt`, plus a rolling `latest.pt`) store the
-weights, optimizer state, and RNG state. Continue an interrupted run with:
+Checkpoints (`data/checkpoints/iterNNNN.pt`, plus a rolling `latest.pt`, plus any
+`<run>-iterNN.pt` archived by `pull_wandb`) store the weights, optimizer state, and RNG
+state. Continue an interrupted run with:
 
 ```bash
-python run/train_loop.py --kaggle --resume auto             # newest checkpoint
+python run/train_loop.py --kaggle --resume auto             # newest iterNNNN.pt, or latest.pt
 python run/train_loop.py --kaggle --resume data/checkpoints/iter0030.pt
 # on Kaggle, add the live dashboard and keep one continuous curve across sessions:
-python run/train_loop.py --kaggle --resume auto --wandb --wandb-run run1
+python run/train_loop.py --kaggle --resume auto --wandb --wandb-run run2
 ```
+
+`--resume auto` picks the newest `iterNNNN.pt`, or falls back to `latest.pt` — so bringing
+a single rolling checkpoint back into a fresh Kaggle session resumes cleanly.
 
 Iteration numbering and `metrics.jsonl` continue on one timeline, so `--iterations N`
 means "run N *more* iterations". (The replay buffer isn't checkpointed — it refills
@@ -91,7 +110,8 @@ one live curve. Full Kaggle runbook: [`run/KAGGLE.md`](run/KAGGLE.md).
 othello/
 ├── engine/                 # the game — the correctness oracle for everything else
 │   ├── board_numpy.py      #   NumPy Othello rules (moves, flips, passing, terminal, scoring) — the oracle
-│   ├── board_batched.py    #   same rules vectorised over B boards [B,8,8] (for fast self-play)
+│   ├── board_batched.py    #   same rules vectorised over B boards [B,8,8] (NumPy, for fast self-play)
+│   ├── board_torch.py      #   same rules on Torch tensors (opt-in on-GPU search, --selfplay-torch; PARKED)
 │   ├── encode.py           #   board <-> NN input planes; the 65-action space; PERSPECTIVE convention
 │   └── symmetry.py          #   8-fold dihedral transforms (board + 65-policy, jointly)
 ├── opponents/              # the yardsticks the agent is measured against
@@ -103,7 +123,8 @@ othello/
 ├── az/                     # the AlphaZero learner
 │   ├── network.py          #   policy+value ResNet + Evaluator (net -> priors, value; batched)
 │   ├── mcts.py             #   PUCT search (a coroutine), Dirichlet root noise, visit_policy
-│   ├── mcts_batched.py     #   B MCTS trees searched in lockstep as flat arrays (fast self-play)
+│   ├── mcts_batched.py     #   B MCTS trees searched in lockstep as flat arrays (fast self-play, NumPy)
+│   ├── mcts_torch.py       #   the same batched MCTS on Torch tensors (opt-in on-GPU search; PARKED)
 │   ├── selfplay.py         #   game generation -> training examples + records (array-ops / pool / multi-core)
 │   ├── replay_buffer.py    #   rolling FIFO of (planes, pi, mask, z)
 │   ├── train.py            #   loss = value MSE + masked policy cross-entropy + L2
@@ -116,10 +137,12 @@ othello/
 │   ├── pull_kaggle.py      #   pull a committed Kaggle run's checkpoint + metrics into data/
 │   ├── pull_wandb.py       #   pull the CURRENT checkpoint from W&B (play the bot mid-training)
 │   └── KAGGLE.md           #   how to train on a free Kaggle GPU
-├── serve/                  # the web app (local, single-user)
-│   ├── backend.py          #   FastAPI: /api/new, /api/move, /api/bot_move; /dashboard, /api/metrics
+├── serve/                  # the web app (local, single-user) — run from the othello/ dir
+│   ├── backend.py          #   FastAPI: play (/api/new,move,bot_move), Arena, Tournament,
+│   │                       #     checkpoint list/delete, /dashboard + /api/metrics
 │   └── frontend/
-│       ├── index.html      #   self-contained board UI (play any bot / watch bots)
+│       ├── index.html      #   play UI: any bot / watch bots / Arena / Models (delete)
+│       ├── tournament.html #   round-robin tournament: points table + live match/game viewer
 │       └── dashboard.html  #   annotated training-metrics charts (live or static)
 ├── tests/                  # tiered test suites (fast default, --full heavy)
 │   ├── harness.py          #   check() + the fast/full runner
@@ -133,7 +156,9 @@ othello/
 
 1. **Engine** defines the rules and is the single source of truth. Everything
    else calls it; `board_numpy.py` is the reference oracle, `board_batched.py` is a
-   vectorised copy for fast self-play (a Torch/CUDA version is a future optimization).
+   vectorised NumPy copy for fast self-play, and `board_torch.py` is an opt-in Torch
+   port that runs the search on-GPU (`--selfplay-torch`) — built + verified but PARKED
+   (op-launch-bound ~2 g/s on a T4, no faster than NumPy there; see `CLAUDE.md`).
 2. **Encoding** turns a board into what the network sees — always from the
    *side-to-move's* perspective (see `encode.py`, this is the key convention).
 3. **Network** maps a position to (move priors, value). **MCTS** uses it to look
