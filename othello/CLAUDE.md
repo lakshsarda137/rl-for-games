@@ -8,7 +8,7 @@ A from-scratch AlphaZero for Othello, built phase by phase against
 `othello_alphazero_implementation_plan.md`. Each phase ends in a tested,
 runnable artifact. See `README.md` for structure.
 
-## Current status (as of 2026-07-19)
+## Current status (as of 2026-07-20)
 - **Phase 0 (engine + encoding)** ✅ — `engine/`. Perft 1–8 match canonical
   Othello values; encode round-trips; symmetry invertible.
 - **Phase 1 (minimax + heuristic)** ✅ — `opponents/`. Depth is the difficulty
@@ -56,18 +56,43 @@ runnable artifact. See `README.md` for structure.
   waits on a small net eval), so 4 processes just queue at the one GPU and every round-trip slows. The
   local 3.4× was a `device=cpu` benchmark and did NOT transfer. **On GPU: one process, big batch** —
   let the GPU's own cores parallelise inside the batch. `kaggle` config = array-ops, `selfplay_workers=1`.
-  **No long GPU run yet; resume/load-to-play still unwired.**
+- **Resume + dashboard + web load-to-play + Arena + W&B ✅ (2026-07-19/20)** — see next-steps item 2
+  (all built). `--resume auto`, checkpoint/optimizer/RNG saved, `latest.pt`; local metrics dashboard
+  (`run/dashboard.py` + `/dashboard`); play the trained net in the web UI as the `az`/`az:<sims>` player;
+  on-demand **Arena** for aggregate strength; **eval OFF by default** (`eval_every=0`).
+- **W&B live monitoring + mid-training play ✅ (2026-07-20)** — `--wandb [--wandb-run NAME]` streams
+  metrics live to wandb.ai AND uploads the checkpoint as a `latest`-aliased model artifact every
+  `--wandb-ckpt-every N` iters; `run/pull_wandb.py --run NAME` fetches the current weights to local
+  `data/` at any time (play the bot mid-training — Kaggle can't serve intermediate weights; push-from-
+  inside is the only way). Verified end-to-end on Kaggle (graphs render, artifact uploads). `--sims N` /
+  `--sims-eval N` override MCTS sims/move per session (for a low→high ramp across resumes).
+- **Most recent REAL run (2026-07-20): the user ran 25 iterations, `--sims 110`, `--wandb-run run1`,
+  eval off, on a Kaggle T4.** So the pipeline is proven at real scale end-to-end (train → live W&B →
+  pull → play). This is still a SMALL-scale net (5×64) trained briefly, so it's a modest bot, not strong.
 
 ## Next steps (in likely order)
 
-> **▶ CURRENT PRIORITY (decided by the user 2026-07-19): item 2 — resume + dashboard + a real
-> training run.** Throughput is "good enough" (2.1 g/s); the goal now is an actual trained bot to
-> watch/play. Do NOT start the GPU port (item 3) — the user explicitly deferred it.
+> **▶ CURRENT PRIORITY (updated 2026-07-20): SCALING FOR STRENGTH — the next agent will (a) increase
+> the network size and (b) port the batched engine + MCTS from NumPy to Torch tensors on CUDA.**
+> Item 2 (resume + dashboard + load-to-play + Arena + W&B + a real run) is DONE, and the user has run a
+> 25-iter `--sims 110` `run1` on a T4. The honest verdict from that: at 5×64 / ~100 sims / few iterations
+> we're training only a MODEST bot. The two levers the user now wants, in this order of cheapness:
 >
-> **UPDATE (2026-07-19): resume ✅, dashboard ✅, web load-to-play ✅, on-demand Arena eval ✅, and
-> a Kaggle→local pull pipeline ✅ are BUILT** (see item 2). **In-training eval is now OFF by default**
-> (kaggle `eval_every=0`) — it was inspection-only; strength is measured on demand via the web Arena.
-> The only thing still open in item 2 is **the real multi-session Kaggle run** (the payoff).
+> 1. **Increase net size (do this first — it's the cheap lever).** Bump `num_blocks`/`channels` in
+>    `run/config.py` (`Config.kaggle()`), e.g. **10×128**. Net compute lands on the **GPU**, which sits
+>    ~73% idle with ~177MB/15GB used — huge headroom, so a several-fold-bigger net is nearly free here
+>    (net eval hides behind the CPU-bound search). A bigger net raises the strength ceiling; it also
+>    NEEDS more iterations/data to fill that capacity, so scale net AND train longer together. (A `--net`
+>    CLI override / new config preset would be a friendly addition; net size is config-only today.)
+> 2. **Port `board_batched` + `mcts_batched` to Torch-CUDA tensors (item 3 below).** This is the big one
+>    and is now IN SCOPE (previously deferred). It's the only way to make sims / games-per-iter cheap
+>    (they're CPU-bound today) and to use the idle GPU for the search itself. Read item 3 fully — esp.
+>    that it's welded to running FAR bigger game batches, and it's device-agnostic Torch (build+test on
+>    the Mac with CPU tensors, prove speed on Kaggle), NOT PyCUDA.
+>
+> **Bottleneck cheat-sheet (established with the user 2026-07-20):** more **sims / more games → CPU**
+> (search+rules are NumPy on CPU, ~87% of self-play, the current wall). Bigger **net → GPU** (idle, cheap).
+> So scale the net now on the CPU path; the GPU port unlocks cheap sims/games later.
 
 1. **Self-play throughput — DONE.** Best GPU config is **single-process array-ops, ~2.1 g/s on a T4**
    (~5× the 0.4 baseline). `kaggle` config = array-ops, `selfplay_workers=1`. **On a GPU keep
@@ -115,7 +140,8 @@ runnable artifact. See `README.md` for structure.
      download the latest `data/checkpoints/latest.pt` (or `iter####.pt`) each session and
      `--resume auto` it next session; watch `max_depth_beaten` climb toward depth-4 on the dashboard.
      This is the payoff of all the throughput work.
-3. **(Optional, big) Port the batched engine + MCTS to Torch-CUDA tensors.** The array-ops search is
+3. **▶ (NOW IN SCOPE — the next agent's task, after net-size) Port the batched engine + MCTS to
+   Torch-CUDA tensors.** (Previously deferred; the user has now asked for it.) The array-ops search is
    NumPy = CPU; moving it to Torch tensors on `cuda` is the only path to use the idle GPU (~27%) and
    scale with batch size. **What is/isn't the bottleneck (know this):** the *game play* (self-play) is
    the bottleneck, and within it the **tree-search + game-rules** (`board_batched`/`mcts_batched`, NumPy)
@@ -133,7 +159,10 @@ runnable artifact. See `README.md` for structure.
    **CORRECTION to earlier notes: this is device-agnostic Torch, buildable + correctness-testable on the
    Mac (CPU tensors) — only its GPU *speed* needs Kaggle. NOT PyCUDA** (PyCUDA custom kernels are the
    NVIDIA-only, resume-flex variant, a further step). The proven NumPy `board_batched`/`mcts_batched` are
-   the exact blueprint. Pursue only if chasing max speed.
+   the exact blueprint — port them op-for-op to Torch tensors and keep `tests/test_batched.py`'s parity
+   checks green against the NumPy oracles (device-agnostic, so run them on CPU tensors on the Mac).
+   **Sequencing: do the net-size bump FIRST (cheap GPU win, see the priority block), then this port** —
+   it only pays off with FAR bigger game batches, so land it together with a big `games_per_iter`.
 4. **Wire self-play records into the web UI** (watch/replay mode; records already exist
    in `data/game_records/`).
 5. **Elo + promotion gating** in evaluation (currently just win-rate ladder).
