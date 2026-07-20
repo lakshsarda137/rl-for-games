@@ -139,6 +139,16 @@ runnable artifact. See `README.md` for structure.
   end-to-end (archived-name listing/parse/play, soft-delete→_trash, traversal/missing→404); real models
   untouched. **To recover the lost iter25: `python run/pull_wandb.py --run run1`** (now archives it as
   `run1-iter25.pt`).
+- **Checkpoint picker UX fix (2026-07-20, user: "which iter is the opponent?").** The old two-control
+  design (player type = "AZ net" + a SEPARATE checkpoint dropdown) was ambiguous — the type label showed the
+  *latest* iter while the real choice was in the second dropdown. Rebuilt so **every checkpoint is its own
+  option in ONE dropdown** (value `az@<ckpt>`, grouped under an "AlphaZero net" `<optgroup>`), for the Black/
+  White player selects and the Arena opponent; the secondary checkpoint dropdowns are gone. `specOf` maps the
+  `az@<ckpt>` option value → `az:<sims>@<ckpt>`. The Arena AZ *champion* stays a checkpoint-only dropdown
+  (it's always AZ). Also added **per-colour identity in gameplay**: the scoreboard shows each side's player
+  under its name (`prettySpec`, e.g. "AZ iter 25", "Minimax d4"), and the Arena focus label names which
+  version plays which colour. Verified: DOM dump shows one option per checkpoint; `az@<ckpt>` specs create
+  games end-to-end.
 
 ## Next steps (in likely order)
 
