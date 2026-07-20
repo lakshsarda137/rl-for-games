@@ -152,6 +152,16 @@
   .note { margin-top: 11px; font-size: 12.5px; color: var(--muted); min-height: 0; }
   .hint { margin: 4px 2px 0; font-size: 12px; line-height: 1.6; color: var(--faint); }
 
+  /* ---- models / checkpoint manager ---- */
+  .ckpt-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .ckpt-item { display: flex; align-items: center; gap: 9px; padding: 7px 8px 7px 12px; background: var(--inset); border: 1px solid var(--line); border-radius: var(--r-sm); }
+  .ckpt-item .name { font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ckpt-item .badge { font-size: 9.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #86e4a6; border: 1px solid #2f7a48; border-radius: 999px; padding: 1px 7px; }
+  .ckpt-item .del { margin-left: auto; height: 29px; padding: 0 11px; font-size: 12.5px; }
+  .btn.danger { color: #ff9c9c; border-color: #4e2626; background: transparent; }
+  .btn.danger:hover { background: rgba(242,106,106,.12); border-color: #7a3030; }
+  .ckpt-empty { color: var(--faint); font-size: 12.5px; }
+
   /* ---- arena spectate ---- */
   .arena { margin-top: 26px; }
   .arena-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -290,6 +300,11 @@
         <div class="note" id="arenaOut" aria-live="polite"></div>
       </div>
 
+      <div class="card" id="modelsBox" hidden>
+        <h2>Models <span class="note">delete to remove from the picker</span></h2>
+        <ul class="ckpt-list" id="ckptList"></ul>
+      </div>
+
       <p class="hint" id="edaxHint"></p>
     </aside>
   </main>
@@ -348,6 +363,40 @@ function fillCkptSelect(sel) {
     const o = document.createElement("option");
     o.value = val; o.textContent = label; sel.appendChild(o);
   }
+}
+function refreshCkptSelects() {
+  for (const id of ["blackCkpt", "whiteCkpt", "arenaChampCkpt", "arenaOppCkpt"]) {
+    const sel = $(id); if (!sel) continue;
+    const cur = sel.value; fillCkptSelect(sel);
+    if ([...sel.options].some(o => o.value === cur)) sel.value = cur;   // keep selection if it survived
+  }
+}
+function renderCkptList() {
+  const ul = $("ckptList"); if (!ul) return;
+  const list = config.checkpoints || [];
+  if (!list.length) { ul.innerHTML = '<li class="ckpt-empty">No checkpoints.</li>'; return; }
+  ul.innerHTML = "";
+  for (const c of list) {
+    const li = document.createElement("li"); li.className = "ckpt-item";
+    const name = document.createElement("span"); name.className = "name";
+    name.textContent = c.is_latest ? `latest · iter ${c.iteration ?? "?"}`
+      : c.iteration != null ? `${c.label} · iter ${c.iteration}` : c.label;
+    li.appendChild(name);
+    if (c.is_latest) { const b = document.createElement("span"); b.className = "badge"; b.textContent = "live"; li.appendChild(b); }
+    const del = document.createElement("button");
+    del.className = "btn danger del"; del.textContent = "Delete"; del.title = "Move to _trash (recoverable)";
+    del.addEventListener("click", () => deleteCkpt(c));
+    li.appendChild(del); ul.appendChild(li);
+  }
+}
+async function deleteCkpt(c) {
+  const nice = c.is_latest ? `latest (iter ${c.iteration ?? "?"})` : c.label;
+  if (!confirm(`Delete checkpoint “${nice}”?\n\nIt is moved to data/checkpoints/_trash and stays recoverable.`)) return;
+  try {
+    const r = await api("/api/checkpoints/delete", { label: c.label });
+    config.checkpoints = r.checkpoints;
+    refreshCkptSelects(); renderCkptList();
+  } catch (e) { alert("Could not delete: " + e.message); }
 }
 function needsParam(t) { return t === "minimax" || t === "edax" || t === "az"; }
 function syncParam(typeSel, paramInput, ckptRow) {
@@ -598,6 +647,7 @@ async function arenaControl(action) {
     $("arenaBtn").addEventListener("click", startArena);
     $("alPause").addEventListener("click", () => arenaControl($("alPause").textContent === "Pause" ? "pause" : "resume"));
     $("alStop").addEventListener("click", () => arenaControl("stop"));
+    $("modelsBox").hidden = false; renderCkptList();
   }
   const hints = [];
   hints.push(config.az_available

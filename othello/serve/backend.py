@@ -16,6 +16,7 @@ Endpoints:
   POST /api/arena {...}      -> start an N-game AZ-vs-opponent match (parallel, spectate-able)
   GET  /api/arena/{id}       -> poll a match: tally + per-game live boards
   POST /api/arena/{id}/control {action} -> pause | resume | stop the match
+  POST /api/checkpoints/delete {label}  -> soft-delete a checkpoint (move to _trash)
 
 Player specs (strings): "human", "random", "greedy", "minimax:D", "edax:L", and the trained
 net "az" / "az:<sims>" / "az@<ckpt>" / "az:<sims>@<ckpt>" (ckpt = "latest" or "iterNNNN").
@@ -27,6 +28,8 @@ loop or other requests.
 
 import json
 import os
+import re
+import shutil
 import sys
 import threading
 import time
@@ -87,12 +90,19 @@ def latest_checkpoint():
     return best
 
 
-def checkpoint_path(label):
-    """Resolve a checkpoint label ('latest' | 'iterNNNN') to a file path.
+# A checkpoint label is a .pt filename stem: 'latest', 'iter0007', or an archived
+# pull like 'run2-iter04'. Restrict to a safe charset (no separators / traversal)
+# so a label can never escape CKPT_DIR.
+_CKPT_LABEL_RE = re.compile(r"[a-z0-9._-]+")
 
-    'latest' (or empty) -> the rolling latest.pt (or newest iter file). A specific
-    label like 'iter0007' -> that exact file. Raises ValueError if it doesn't exist,
-    so a stale picker selection surfaces a clean 400 instead of a torch stack trace.
+
+def checkpoint_path(label):
+    """Resolve a checkpoint label to a file path inside CKPT_DIR.
+
+    'latest' (or empty) -> the rolling latest.pt (or newest iter file). Any other
+    label -> `<label>.pt` if it exists (e.g. 'iter0007', 'run2-iter04'). Raises
+    ValueError on a bad/missing label so a stale picker selection is a clean 400,
+    not a torch stack trace. Path-traversal is blocked (charset + dirname check).
     """
     label = (label or "").strip().lower()
     if label in ("", "latest"):
@@ -100,10 +110,10 @@ def checkpoint_path(label):
         if p is None:
             raise ValueError("no trained model available yet")
         return p
-    if not (label.startswith("iter") and label[4:].isdigit()):
-        raise ValueError(f"bad checkpoint label {label!r} (want 'latest' or 'iterNNNN')")
+    if ".." in label or not _CKPT_LABEL_RE.fullmatch(label):
+        raise ValueError(f"bad checkpoint label {label!r}")
     p = os.path.join(CKPT_DIR, label + ".pt")
-    if not os.path.isfile(p):
+    if os.path.dirname(os.path.abspath(p)) != os.path.abspath(CKPT_DIR) or not os.path.isfile(p):
         raise ValueError(f"checkpoint {label} not found")
     return p
 
@@ -111,10 +121,11 @@ def checkpoint_path(label):
 def list_checkpoints():
     """All loadable checkpoints, newest first, for the web UI's checkpoint picker.
 
-    latest.pt is listed first (its iteration read from the file); the per-iteration
-    iterNNNN.pt files follow, sorted by iteration descending. Only latest.pt is
-    opened (to report its iteration) — the iter files' numbers come from the name,
-    so listing stays cheap no matter how many have accumulated.
+    latest.pt is listed first (its iteration read from the file, cached by mtime);
+    every other `*.pt` in CKPT_DIR follows — the per-iter iterNNNN.pt files AND any
+    archived pulls (run2-iter04.pt). Iteration is parsed from the name (`iter<N>`
+    anywhere in it), so listing stays cheap no matter how many have accumulated.
+    Files under the _trash subdir are ignored (that's where deletes go).
     """
     out = []
     latest = os.path.join(CKPT_DIR, "latest.pt")
@@ -125,17 +136,18 @@ def list_checkpoints():
         except Exception:
             it = None
         out.append({"label": "latest", "iteration": it, "is_latest": True})
-    iters = []
+    others = []
     if os.path.isdir(CKPT_DIR):
-        for name in os.listdir(CKPT_DIR):
-            if name.startswith("iter") and name.endswith(".pt"):
-                try:
-                    it = int(name[4:-3])
-                except ValueError:
-                    continue
-                iters.append({"label": name[:-3], "iteration": it, "is_latest": False})
-    iters.sort(key=lambda d: d["iteration"], reverse=True)
-    out.extend(iters)
+        for name in sorted(os.listdir(CKPT_DIR)):
+            if not name.endswith(".pt") or name == "latest.pt":
+                continue
+            label = name[:-3]
+            m = re.search(r"iter0*(\d+)", label)
+            others.append({"label": label, "iteration": int(m.group(1)) if m else None,
+                           "is_latest": False})
+    others.sort(key=lambda d: (d["iteration"] if d["iteration"] is not None else -1, d["label"]),
+                reverse=True)
+    out.extend(others)
     return out
 
 
@@ -465,6 +477,10 @@ class ArenaControl(BaseModel):
     action: str = "pause"         # "pause" | "resume" | "stop"
 
 
+class DeleteCkptReq(BaseModel):
+    label: str                    # checkpoint stem to remove, e.g. "run2-iter04" or "latest"
+
+
 # --- routes ------------------------------------------------------------------
 @app.get("/")
 def index():
@@ -566,6 +582,28 @@ def config():
         "checkpoints": list_checkpoints() if az_path is not None else [],
         "max_arena_workers": MAX_ARENA_WORKERS,
     }
+
+
+@app.post("/api/checkpoints/delete")
+def delete_checkpoint(req: DeleteCkptReq):
+    """Remove a checkpoint the user picked — SOFT delete: the .pt is MOVED to
+    CKPT_DIR/_trash (recoverable), never hard-deleted. Returns the fresh list."""
+    try:
+        path = checkpoint_path(req.label)          # validates existence + path safety
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    trash = os.path.join(CKPT_DIR, "_trash")
+    os.makedirs(trash, exist_ok=True)
+    dest = os.path.join(trash, os.path.basename(path))
+    if os.path.exists(dest):                        # don't clobber an earlier trashed copy
+        stem, i = os.path.basename(path)[:-3], 1
+        while os.path.exists(os.path.join(trash, f"{stem}.{i}.pt")):
+            i += 1
+        dest = os.path.join(trash, f"{stem}.{i}.pt")
+    shutil.move(path, dest)
+    _AZ_CACHE.pop(path, None)                        # drop any cached evaluator for it
+    return {"deleted": req.label, "trash": os.path.relpath(dest, DATA_DIR),
+            "checkpoints": list_checkpoints()}
 
 
 @app.post("/api/new")
