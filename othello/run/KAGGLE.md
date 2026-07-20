@@ -1,79 +1,57 @@
 # Training on Kaggle (free GPU)
 
-The code is device-agnostic — `train_loop.py` auto-detects CUDA. On Kaggle you
-clone this repo, enable the GPU, and run one command. Checkpoints, game records,
-and `metrics.jsonl` land in `/kaggle/working/` so you can download them after.
+`train_loop.py` is device-agnostic — it auto-detects CUDA. You clone this repo
+into a Kaggle notebook, turn on the GPU, and run. Two ways to see how training is
+going:
 
-## One-time steps
-1. Go to <https://www.kaggle.com> → **Create → New Notebook**.
-2. In the right sidebar: **Session options → Accelerator → GPU T4 x2** (or P100).
-   Also turn **Internet → On** (needed to `git clone`).
-3. Paste the three cells below and **Run All**.
+- **Live, while it runs** → Weights & Biases (`--wandb`), watched from your laptop.
+  This is the only way to see *in-progress* remote training.
+- **After a committed run** → pull the checkpoint + `metrics.jsonl` down and use the
+  local web app / dashboard (`run/pull_kaggle.py`). This is for *playing* the finished
+  model, not live monitoring.
 
-## The cells
+The good settings are baked into the **`--kaggle`** config: the 5×64 net, array-ops
+self-play in a **single process** (fastest on a shared GPU), eval off, 30 iterations.
 
-**Cell 1 — get the code**
+## One-time setup
+
+**A. The notebook** — <https://www.kaggle.com> → **Create → New Notebook**. Right
+sidebar: **Accelerator → GPU T4 x2** (or P100), and **Internet → On** (needed to
+`git clone` and to reach W&B).
+
+**B. Weights & Biases** (to watch training live) — make a free account at
+<https://wandb.ai>, copy your key from <https://wandb.ai/authorize>, then in the
+notebook add it as a **Secret**: *Add-ons → Secrets → Add secret*, name it exactly
+`WANDB_API_KEY`. **Never paste the key into a code cell.**
+
+**C. Kaggle API token** (only needed *locally*, to pull results to your Mac) —
+`pip install kaggle`, then a token from <https://www.kaggle.com/settings> → **API →
+Create New Token** → save to `~/.kaggle/kaggle.json` (or `export KAGGLE_API_TOKEN=…`
+in your shell profile). See "Pull results to your machine" below.
+
+## The notebook cells
+
+**Cell 1 — get the code** (re-clone every session; Kaggle wipes the disk):
 ```python
 !git clone --depth 1 https://github.com/lakshsarda137/rl-for-games.git
 %cd rl-for-games/othello
 ```
 
-**Cell 2 — confirm the GPU is visible**
+**Cell 2 — confirm the GPU:**
 ```python
 import torch
 print("CUDA:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 ```
 
-**Cell 3a — SMOKE RUN first** (2 iterations, eval skipped so you get the
-self-play speed number fast; weights thrown away on purpose). The `--kaggle`
-config runs **array-ops** self-play (batched engine + MCTS, games searched in
-lockstep) in a **single process** — on a GPU that's the fastest, because multiple
-workers would all share the one GPU and contend for it.
+**Cell 3 — smoke run** (2 iters, eval off, weights thrown away — just checks speed):
 ```python
 !python -u run/train_loop.py --kaggle --iterations 2 --eval-every 0 --out /kaggle/working/az_smoke
 ```
-**What to look for:** the per-iteration `X.X g/s`. Baseline was **~0.4 g/s**;
-array-ops hits **~2.1 g/s** on a T4. (`nvidia-smi` will still show modest GPU use
-and a busy CPU — the search math is NumPy on the CPU; the network is what's on the
-GPU. That's the known ceiling; the only thing that lifts it is the future
-Torch-CUDA port of the search, not more CPU workers.)
-> DON'T pass `--workers >1` on a GPU: they share one device and contend, which is
-> *slower* (measured 2.1→1.3 g/s at 4 workers on a T4). Workers help only a
-> `--device cpu` run.
+Look at the per-iteration `X.X g/s`. Baseline was ~0.4; array-ops hits ~2.1 on a T4.
+(`nvidia-smi` shows modest GPU + a busy CPU — the search math is NumPy on the CPU,
+only the network is on the GPU; that's the known ceiling.)
 
-**Cell 3b — the real run** (5x64 net, ~30 iterations; finishes within a session
-and should climb the minimax ladder toward depth-4). Run this only after the
-smoke number looks good.
-```python
-!python run/train_loop.py --kaggle --out /kaggle/working/az_data
-```
-To run *longer than one session*, resume from the previous session's checkpoint
-(see "Resuming across sessions" below):
-```python
-!python run/train_loop.py --kaggle --resume auto --out /kaggle/working/az_data
-```
-
-Progress prints per iteration: total/policy/value loss, buffer size, games/sec.
-
-**Evaluation is OFF by default** in the `--kaggle` config (`eval_every=0`). The
-minimax-ladder eval is inspection-only — it never affects what the net learns —
-and it's the slowest part of an iteration, so training runs faster without it.
-Measure strength on demand instead (the web **Arena**, below). To turn it back on
-for a strength curve, add `--eval-every 5` (every 5th iteration) or `--eval-every 1`.
-
-## Watch training LIVE from your laptop (Weights & Biases)
-
-`pull_kaggle.py` gets you the *finished* model to play locally — it is NOT a live
-monitor (Kaggle only publishes output when a committed run finishes). To watch a
-run **as it trains**, the process has to push metrics out over the internet. That's
-what `--wandb` does: it streams each iteration to Weights & Biases, and you watch a
-real-time dashboard at wandb.ai from anywhere.
-
-One-time: make a free account at <https://wandb.ai>, copy your key from
-<https://wandb.ai/authorize>, and in the notebook add it as a **Secret**
-(*Add-ons → Secrets*, name it `WANDB_API_KEY`) — never paste the key into a cell.
-
-Then, instead of Cell 3:
+**Cell 4 — the real run, with the live W&B dashboard:**
 ```python
 !pip install -q wandb                       # if the Kaggle image doesn't have it
 from kaggle_secrets import UserSecretsClient
@@ -82,74 +60,90 @@ os.environ["WANDB_API_KEY"] = UserSecretsClient().get_secret("WANDB_API_KEY")
 
 !python run/train_loop.py --kaggle --wandb --wandb-run run1 --out /kaggle/working/az_data
 ```
-The run prints its wandb.ai URL — open it on your laptop and the loss / speed
-curves update **every iteration, live**. Add `--eval-every 5` if you also want the
-strength (win-rate / max_depth_beaten) curves in that live view.
+It prints a **wandb.ai URL** — open it on your Mac and the loss/speed curves update
+**every iteration, live**. When it's done, **Save Version → "Save & Run All
+(Commit)"** so the checkpoint + metrics become downloadable (that's what makes the
+local pull work).
 
-Across sessions: reuse the **same** `--wandb-run run1` together with `--resume auto`
-and W&B continues the *same* live curve on one timeline. (W&B is only for watching
-— you still `pull_kaggle.py` the checkpoint down when you want to play the bot.)
+*No W&B?* Drop the three wandb lines and the `--wandb --wandb-run run1` flags —
+training is identical, you just lose the live view.
 
-## Getting your results back
-Everything is written under `/kaggle/working/az_data/`:
-- `checkpoints/iter####.pt` + `latest.pt` — the model (weights + optimizer + config)
-- `metrics.jsonl` — the training curves (one JSON line per iteration)
-- `game_records/*.json` — self-play games (for the web spectator later)
+## Command reference (run / resume / options)
 
-After the run, the **Output** tab lists these for download.
+Run from the `othello/` dir. `--out /kaggle/working/az_data` keeps outputs together.
 
-### Straight into your local web app (the pipeline)
-To play/inspect the Kaggle-trained model in your **local** app at
-<http://127.0.0.1:8000>, pull its `latest.pt` + `metrics.jsonl` into local `data/`
-with the Kaggle API (needs `pip install kaggle` + an API token, and the notebook
-**committed** via *Save & Run All* so its output is fetchable):
+| Goal | Command |
+|---|---|
+| Smoke test (speed) | `python run/train_loop.py --kaggle --iterations 2 --eval-every 0 --out /kaggle/working/az_data` |
+| Real run (live W&B) | `python run/train_loop.py --kaggle --wandb --wandb-run run1 --out /kaggle/working/az_data` |
+| Resume next session | `python run/train_loop.py --kaggle --resume auto --wandb --wandb-run run1 --out /kaggle/working/az_data` |
+| + strength curves | add `--eval-every 5` (win-rate / `max_depth_beaten` every 5 iters) |
+| Run more/fewer iters | add `--iterations N` (when resuming, N = N *more* iterations) |
 
-```bash
-python run/pull_kaggle.py --kernel <username>/<kernel-slug>          # one-shot
-python run/pull_kaggle.py --kernel <username>/<kernel-slug> --watch 300   # poll every 5 min
-```
-
-It drops the newest checkpoint at `data/checkpoints/latest.pt` and metrics at
-`data/metrics.jsonl`. Then start `python serve/backend.py` — the play UI picks up
-the new weights on the next New Game, and `/dashboard` shows the curves. (If you
-version outputs as a Kaggle Dataset instead of a committed kernel, use
-`--dataset <username>/<slug>`.)
+The flags that matter:
+- **`--kaggle`** — the GPU config: 5×64 net, array-ops self-play, `workers=1`, eval off, 30 iters, `device=cuda`.
+- **`--wandb [--wandb-run NAME]`** — stream metrics live to wandb.ai. Reuse the **same** NAME with `--resume` to continue **one** live curve across sessions.
+- **`--resume auto`** — continue the newest checkpoint (see next section). `--iterations N` then means N *more* iterations.
+- **`--eval-every N`** — minimax-ladder eval every N iters (**0 = off, the default**). It's inspection-only (never affects learning) and the slowest part of an iteration, so it's off by default; measure strength on demand with the web **Arena** instead, or turn it on here for live strength curves.
 
 ## Resuming across sessions
 
-A Kaggle session is wiped when it ends, so a multi-session run has to carry the
-checkpoint across. The `.pt` file holds everything needed — weights, optimizer
-state, RNG state, config, and the iteration number — so resuming is seamless.
+A Kaggle session is wiped when it ends, so a multi-session run carries the
+checkpoint across. The `.pt` holds weights + optimizer + RNG + config + iteration,
+so resume is seamless.
 
-1. **End of session:** download `checkpoints/latest.pt` from the **Output** tab
-   (or add `/kaggle/working/az_data` as a notebook output / a Kaggle Dataset).
-2. **Next session:** make that file available again — the simplest is to attach
-   it as an **input dataset** (right sidebar → *Add Input*), which mounts it under
-   `/kaggle/input/<your-dataset>/`. Copy it into place and resume:
+1. **End each session** with **Save Version → "Save & Run All (Commit)"** so
+   `/kaggle/working` is persisted.
+2. **Next session**, bring the previous checkpoint back — simplest is **Add Input →
+   Notebook Output → your notebook**, which mounts it under `/kaggle/input/…`. Then:
    ```python
-   !mkdir -p /kaggle/working/az_data/checkpoints
-   !cp /kaggle/input/<your-dataset>/latest.pt /kaggle/working/az_data/checkpoints/
-   !python run/train_loop.py --kaggle --resume auto --out /kaggle/working/az_data
+   import glob, os, shutil
+   os.makedirs("/kaggle/working/az_data/checkpoints", exist_ok=True)
+   src = sorted(glob.glob("/kaggle/input/**/latest.pt", recursive=True))
+   assert src, "Attach your previous notebook output as an Input first."
+   shutil.copy(src[0], "/kaggle/working/az_data/checkpoints/latest.pt")
+   print("resuming from", src[0])
+   !python run/train_loop.py --kaggle --resume auto --wandb --wandb-run run1 --out /kaggle/working/az_data
    ```
-   `--resume auto` picks the newest checkpoint in that dir; or point at it
-   explicitly with `--resume /kaggle/working/az_data/checkpoints/latest.pt`.
+`--resume auto` picks the newest checkpoint; iteration numbering + `metrics.jsonl`
+continue on one timeline; reusing `--wandb-run run1` continues the same live curve.
+(The replay buffer isn't saved — it refills over the first 1–2 iters.) A big run is
+inherently several sessions: ~45 min per 30 iters, and Kaggle gives roughly ~30h of
+GPU per week with ~9–12h per session — so a ~1000-iteration run is many resumed
+sessions, watched live on W&B each time.
 
-`--iterations N` means **N more** iterations when resuming, and the iteration
-counter + `metrics.jsonl` continue on one timeline. (The replay buffer isn't
-saved — it refills over the first 1–2 iterations, which is fine.) So each session
-adds ~30 iterations on top of the last, and the strength curve keeps climbing.
+## Pull results to your machine (to play the bot)
+
+W&B is for *watching*; to *play* the trained net locally, pull the checkpoint down.
+Needs the Kaggle API token (setup **C**) and a **committed** run.
+
+```bash
+cd othello
+python run/pull_kaggle.py --kernel lakshsarda/othello-rl-training            # one-shot
+python run/pull_kaggle.py --kernel lakshsarda/othello-rl-training --watch 300   # re-pull each new commit
+```
+It installs the newest checkpoint → `data/checkpoints/latest.pt` and metrics →
+`data/metrics.jsonl`. Then:
+```bash
+python serve/backend.py     # http://127.0.0.1:8000        : play "AZ net", or Arena for aggregate win rates
+                            # http://127.0.0.1:8000/dashboard : the metric curves
+```
+`pull_kaggle` only sees a **committed** run's output (not an in-progress one) — that
+is exactly why W&B is the live view. (`--dataset <user>/<slug>` instead of `--kernel`
+if you version outputs as a Kaggle Dataset.)
+
+Everything committed lands under `/kaggle/working/az_data/`: `checkpoints/iter####.pt`
++ `latest.pt`, `metrics.jsonl`, `game_records/*.json`. The **Output** tab also lists
+them for manual download if you'd rather not use the API.
 
 ## Notes
-- **No `pip install` needed** — Kaggle images ship torch + numpy. (Edax, FastAPI,
-  and TensorBoard are not used by training.)
-- **TensorBoard** stays off by default (a protobuf clash spams errors in some
-  images); `metrics.jsonl` is the source of truth. Add `--tensorboard` only if
-  your image's protobuf is compatible.
-- **Long runs:** enable **Save & Run All (Commit)** for background execution so
-  training survives you closing the tab (Kaggle allows ~9–12h sessions).
-- **Scaling up:** two throughput levers are in place — batched inference (many
-  games share one net call) and **multiprocess self-play** (`--workers N` splits
-  games over N processes). The workers are the real win here, because self-play is
-  CPU-bound single-threaded Python; set `--workers` to the session's vCPU count.
-  Watch `selfplay_games_per_sec`. The next, bigger lever (moving the MCTS/engine
-  onto the GPU via a CUDA kernel) needs an NVIDIA GPU to build — it's future work.
+- **Deps:** Kaggle images ship torch + numpy (no install for training). `--wandb`
+  needs `pip install wandb` (Cell 4 does it). Edax / FastAPI are only for the local app.
+- **On a GPU keep `workers=1`.** `--workers >1` makes processes contend for the one
+  shared GPU and is *slower* (measured 2.1→1.3 g/s at 4 workers on a T4); it only
+  helps a `--device cpu` run. `--kaggle` already sets `workers=1`.
+- **Throughput:** the lever in place is array-ops self-play (~2.1 g/s on a T4, ~5×
+  the 0.4 baseline). The tree-search/rules math is still NumPy-on-CPU; moving it to
+  the GPU is future work (see CLAUDE.md next-steps item 3).
+- **TensorBoard** stays off (protobuf clash in some images); `metrics.jsonl` + W&B
+  are the metric sinks. `metrics.jsonl` is always the source of truth.
