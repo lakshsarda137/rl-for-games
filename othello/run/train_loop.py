@@ -209,9 +209,12 @@ def load_for_resume(path, cfg, ckpt_dir):
     """
     if path in ("auto", "latest"):
         resolved = _find_latest_checkpoint(ckpt_dir)
+        if resolved is None:                       # no iterNNNN.pt — fall back to latest.pt
+            alt = os.path.join(ckpt_dir, "latest.pt")
+            resolved = alt if os.path.isfile(alt) else None
         if resolved is None:
             raise FileNotFoundError(
-                f"--resume {path}: no iter*.pt checkpoints found in {ckpt_dir}")
+                f"--resume {path}: no iter*.pt or latest.pt in {ckpt_dir}")
         path = resolved
     if not os.path.isfile(path):
         raise FileNotFoundError(f"--resume: checkpoint not found: {path}")
