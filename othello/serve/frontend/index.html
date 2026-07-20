@@ -337,8 +337,10 @@ let gameId = null, state = null, paused = false, busy = false, config = {};
 // dropdown per player and no separate "which checkpoint" filter. The type value
 // fully identifies the player; the number box is its parameter (sims / depth / level).
 function ckptLabelText(c) {
-  return c.is_latest ? `latest · iter ${c.iteration ?? "?"}`
-    : c.iteration != null ? `iter ${c.iteration}` : c.label;
+  if (c.is_latest) return `latest · iter ${c.iteration ?? "?"}`;
+  const m = c.label.match(/^(.+)-iter0*(\d+)$/);   // archived pull "<run>-iter<NN>" -> show the run
+  if (m) return `${m[1]} · iter ${m[2]}`;
+  return c.iteration != null ? `iter ${c.iteration}` : c.label;
 }
 function fillPlayerSelect(sel, { human = true, chosen } = {}) {
   if (!sel) return;
@@ -391,8 +393,7 @@ function renderCkptList() {
   for (const c of list) {
     const li = document.createElement("li"); li.className = "ckpt-item";
     const name = document.createElement("span"); name.className = "name";
-    name.textContent = c.is_latest ? `latest · iter ${c.iteration ?? "?"}`
-      : c.iteration != null ? `${c.label} · iter ${c.iteration}` : c.label;
+    name.textContent = ckptLabelText(c);
     li.appendChild(name);
     if (c.is_latest) { const b = document.createElement("span"); b.className = "badge"; b.textContent = "live"; li.appendChild(b); }
     const del = document.createElement("button");
@@ -442,6 +443,8 @@ function prettySpec(spec) {
   if (spec.startsWith("az")) {
     const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest";
     if (ck === "latest") return "AZ latest" + (config.az_iteration != null ? ` (iter ${config.az_iteration})` : "");
+    const r = ck.match(/^(.+)-iter0*(\d+)$/);      // "<run>-iter<NN>" -> include the run
+    if (r) return `AZ ${r[1]} · iter ${r[2]}`;
     const m = ck.match(/iter0*(\d+)/);
     return m ? "AZ iter " + m[1] : "AZ " + ck;
   }

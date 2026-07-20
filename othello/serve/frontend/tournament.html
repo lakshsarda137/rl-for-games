@@ -218,7 +218,12 @@ let config = {}, participants = [], job = null, jobId = null, timer = null;
 let focusMatch = null, focusGame = 0, tilesBuilt = -1, tileCells = [], focusCells = [];
 
 // ---------- player options (no human) ----------
-function ckptLabelText(c) { return c.is_latest ? `latest · iter ${c.iteration ?? "?"}` : c.iteration != null ? `iter ${c.iteration}` : c.label; }
+function ckptLabelText(c) {
+  if (c.is_latest) return `latest · iter ${c.iteration ?? "?"}`;
+  const m = c.label.match(/^(.+)-iter0*(\d+)$/);   // archived pull "<run>-iter<NN>" -> show the run
+  if (m) return `${m[1]} · iter ${m[2]}`;
+  return c.iteration != null ? `iter ${c.iteration}` : c.label;
+}
 function fillPlayerSelect(sel) {
   sel.innerHTML = "";
   const add = (val, label, parent = sel) => { const o = document.createElement("option"); o.value = val; o.textContent = label; parent.appendChild(o); };
@@ -255,7 +260,8 @@ function prettySpec(spec) {
   if (spec.startsWith("edax")) return "Edax L" + (spec.split(":")[1] || "6");
   if (spec.startsWith("az")) {
     const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest", sims = (spec.match(/az:(\d+)/) || [])[1];
-    const base = ck === "latest" ? "AZ latest" : (ck.match(/iter0*(\d+)/) ? "AZ iter " + ck.match(/iter0*(\d+)/)[1] : "AZ " + ck);
+    const r = ck.match(/^(.+)-iter0*(\d+)$/), mi = ck.match(/iter0*(\d+)/);
+    const base = ck === "latest" ? "AZ latest" : r ? `AZ ${r[1]} iter ${r[2]}` : mi ? "AZ iter " + mi[1] : "AZ " + ck;
     return base + (sims ? " · " + sims : "");
   }
   return spec;
