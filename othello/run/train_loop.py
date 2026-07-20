@@ -98,12 +98,14 @@ class MetricsLogger:
         if use_wandb:
             try:
                 import wandb
-                # id=name + resume="allow" continues the SAME W&B run across
-                # resumed sessions, so the curve stays one timeline (matching our
-                # iteration numbering). No name -> W&B auto-generates a fresh run.
-                self.wandb = wandb.init(project=wandb_project or "othello-alphazero",
-                                        id=wandb_run, name=wandb_run,
-                                        resume="allow", config=config)
+                # A named run uses id=name + resume="allow" so the SAME run (and one
+                # continuous curve) resumes across sessions. No name -> let W&B
+                # auto-generate a fresh run (don't pass resume without an id).
+                init_kwargs = {"project": wandb_project or "othello-alphazero",
+                               "config": config}
+                if wandb_run:
+                    init_kwargs.update(id=wandb_run, name=wandb_run, resume="allow")
+                self.wandb = wandb.init(**init_kwargs)
                 print(f"[metrics] Weights & Biases live dashboard: {self.wandb.url}")
             except Exception as exc:
                 print(f"[metrics] wandb disabled ({type(exc).__name__}: {exc}); "
