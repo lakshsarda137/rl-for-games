@@ -184,20 +184,55 @@ runnable artifact. See `README.md` for structure.
   + `--sims ~130–150`, judge iter49-vs-iter74 on Edax. **LR decay is NOT in the code** (`make_optimizer` = plain
   Adam, constant `lr=1e-3`, no scheduler) — that's the next lever if more-data still plateaus (needs checkpoint
   persistence of the scheduler state for cross-session resume).
+- **Training RESULTS as of iter66 (run2) — strength IS still climbing; the loss-plateau was MISLEADING
+  (2026-07-20, batch 3 done).** The models so far, all measured at **80 sims** on the fixed Edax/minimax
+  yardstick (40–100-game samples):
+  - **run1 = 5×64 × 25 iters** (`run1-iter25`); **run2 = 10×128**, resumed across 3 batches to **~iter66–74**
+    (`run2-iterNN` + `latest`). Batch 3 (iter49→~74) ran with `--games 200` (→ ~521 steps/iter, ~208k buffer).
+  - **10×128 clearly beats 5×64:** run2-iter24 beat run1-iter25 **26–13** (40-game match).
+  - **vs Edax L2 — the headline curve:** iter49 ≈ **25%** (10/40) → **iter66 ≈ 47%** (46W-53L-1D over 100 games).
+    The win rate ~DOUBLED and is now a coin flip vs a world-class engine (Edax L2 still edged the match 53–46).
+  - **Edax remains the ceiling** (it swept the earlier 4-way tournament ~91–24). L2 is a LOW Edax level, so 47%
+    there is *competitive*, not "near Edax's real strength". Untested vs L3 at iter66 (an earlier ≤25%-vs-L3
+    guess is now almost certainly too low).
+  - **CORRECTION to the iter49 bullet above:** its "second batch PLATEAUED / data-starvation looks weak" read
+    came from the LOSS — and **the loss LIED**. The yardstick shows large strength gains *through* the flat-loss
+    region (25%→47%): **loss ≠ strength, proven on this run** (loss is fit to the net's own MOVING self-play
+    targets). So `--games 200` very likely HELPED — **keep it** — and a flat loss curve is NOT a reason to stop.
+  - **The one genuine loss signal:** value-loss went noisy and crept UP in the tail — the fingerprint of a
+    constant LR too hot to settle (motivates the LR-decay task; see the heads-up below).
 
 ## Next steps (in likely order)
 
-> **▶ CURRENT PRIORITY (updated 2026-07-20): web-app + tournament tooling is DONE; run2 reached iter49 and
-> the SECOND training batch PLATEAUED.** See the "Training reality as of iter49" status bullet for the numbers.
-> The scaling exploration is settled (10×128 net; Torch search port PARKED — op-launch-bound ~2 g/s on a T4;
-> train on NumPy). **Next move = a data-starvation experiment:** resume run2 from iter49 with `--games 200`
-> (now auto-scales `steps_per_iter`+`buffer_size`) and `--sims ~130–150`, then judge **iter49-vs-iter74 vs
-> Edax/Minimax with 40+ games** (NOT loss, NOT 10-game head-to-heads). If it still plateaus, add **LR decay**
-> (not in the code yet — constant Adam `lr=1e-3`; needs scheduler-state persistence in the checkpoint for
-> cross-session resume). Shipped web/benchmark tooling: rebuilt play UI, parallel spectate-able Arena,
-> checkpoint picker + **Models (delete)** card, non-destructive `pull_wandb` archival, and a **round-robin
-> tournament** (`/tournament`). **Still open:** spectate/replay of `data/game_records/*.json`, Elo instead of
-> the win-rate ladder, and LR decay.
+> **▶ CURRENT PRIORITY (updated 2026-07-20): run2 at iter66 is ~47% vs Edax L2 (up from 25% at iter49) — the
+> bot is STILL getting stronger; the flat loss was misleading.** See "Training RESULTS as of iter66". Web +
+> tournament tooling is DONE, and the `--games 200` data experiment worked (KEEP it — the strength climbed even
+> though the loss stayed flat). **Next move = add LR DECAY** — the value-loss is noisy/creeping up (constant
+> Adam `lr=1e-3`, no scheduler), leaving fine gains + checkpoint stability on the table; decay could tip iter66's
+> 47% *over* 50% vs Edax L2. **A NEW AGENT is implementing LR decay — see the "▶ HEADS-UP" note just below.**
+> After that: keep training (`--games 200`, `--sims ~120–150`), judging every batch on the **Edax/Minimax
+> yardstick with 40+ games, never the loss**. **Still open:** LR decay (next up), spectate/replay of
+> `data/game_records/*.json`, Elo instead of the win-rate ladder.
+>
+> **▶ HEADS-UP FOR THE NEXT AGENT — implement LR decay (the current top task):**
+> **What/why:** `az/train.py::make_optimizer` is plain `Adam(lr=cfg.lr=1e-3, weight_decay=1e-4)` with **no
+> scheduler** — the LR is constant for the whole multi-session run. Symptom: value-loss goes noisy and creeps
+> UP in the tail (LR too hot to settle; worsened by `--games 200` raising steps/iter to ~521). `weight_decay`
+> is L2 regularization, **NOT** LR decay — don't conflate them. Goal: decay the LR from ~1e-3 to ~1e-4 over the
+> run (cosine or step).
+> **THE GOTCHA — resume-safety (this run resumes across Kaggle sessions):** a stateful torch scheduler resets to
+> 1e-3 on every resume and silently undoes the decay UNLESS you persist `scheduler.state_dict()` in
+> `save_checkpoint` and restore it in `load_for_resume`. **Simplest resume-safe design (RECOMMENDED): make the
+> LR a pure function of the GLOBAL iteration** (already stored in the checkpoint) — compute
+> `lr = schedule(lr0=1e-3, lr1=1e-4, global_iter, horizon)` at the START of each iteration in `train()` and set
+> it on the optimizer's `param_groups`. No extra state to persist → decay continues seamlessly across resumes.
+> Add a `horizon` (target total iters, ~150–200) as a `cfg` field; the run is open-ended, so either a horizon
+> (cosine/linear to a floor) or a gentle per-iter exponential (`lr *= gamma`, no horizon) is fine — pick one and
+> document it. `load_for_resume` already re-applies `cfg.lr` on resume, so the injection point exists.
+> **Verify:** value-loss noise/creep calms; then MEASURE strength on the yardstick — the checkpoint before vs
+> after, vs **Edax L2 (and L3), 40+ games** (NOT the loss). Expect a MODEST bump (a few %), maybe enough to cross
+> 50% vs Edax L2 — not another 25→47 leap. Keep the FAST test tier <20s; extend `test_resume_continues_training`
+> (SLOW) to assert the LR actually decayed and survived a resume.
 >
 > **Bottleneck cheat-sheet (settled):** more **sims / more games → CPU** on the NumPy path (search+rules
 > are NumPy, ~87% of self-play). Bigger **net → GPU** (cheap). The Torch port moved the search onto the
