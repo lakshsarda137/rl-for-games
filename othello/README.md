@@ -42,8 +42,12 @@ of your choice and reports aggregate win/draw/loss + win rate — a far more rel
 strength read than a single game. (In-training minimax eval is inspection-only and
 **off by default** in the Kaggle config; the Arena is the on-demand replacement.)
 
-To play a model trained on Kaggle locally, pull it down first with
-`python run/pull_kaggle.py --kernel <user>/<slug>` (see `run/KAGGLE.md`).
+To play a model trained on Kaggle locally, pull it down first:
+- **Mid-training (any time, no waiting)** — `python run/pull_wandb.py --run run1`
+  grabs the current checkpoint that training uploads to W&B every few iterations.
+- **After a committed run** — `python run/pull_kaggle.py --kernel <user>/<slug>`.
+
+See `run/KAGGLE.md`.
 
 ## Watching training progress
 
@@ -109,7 +113,8 @@ othello/
 │   ├── play_cli.py         #   terminal viewer: watch bots or play one yourself
 │   ├── train_loop.py       #   top-level loop; device auto-detect; --tiny/--kaggle; --resume
 │   ├── dashboard.py        #   build a standalone HTML dashboard from data/metrics.jsonl
-│   ├── pull_kaggle.py      #   pull a Kaggle run's checkpoint + metrics into local data/
+│   ├── pull_kaggle.py      #   pull a committed Kaggle run's checkpoint + metrics into data/
+│   ├── pull_wandb.py       #   pull the CURRENT checkpoint from W&B (play the bot mid-training)
 │   └── KAGGLE.md           #   how to train on a free Kaggle GPU
 ├── serve/                  # the web app (local, single-user)
 │   ├── backend.py          #   FastAPI: /api/new, /api/move, /api/bot_move; /dashboard, /api/metrics

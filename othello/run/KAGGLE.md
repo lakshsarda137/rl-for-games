@@ -112,10 +112,33 @@ inherently several sessions: ~45 min per 30 iters, and Kaggle gives roughly ~30h
 GPU per week with ~9–12h per session — so a ~1000-iteration run is many resumed
 sessions, watched live on W&B each time.
 
-## Pull results to your machine (to play the bot)
+## Play the bot MID-training (no waiting, no second cell)
 
-W&B is for *watching*; to *play* the trained net locally, pull the checkpoint down.
-Needs the Kaggle API token (setup **C**) and a **committed** run.
+You do **not** have to wait for a run to finish to play the current bot — and you
+**can't** do it from a second Kaggle cell (the notebook runs one cell at a time, so
+a new cell just queues behind the training cell). The trick is the same push model
+as W&B metrics: when you train with `--wandb`, the process **uploads the checkpoint
+to W&B every few iterations** (`--wandb-ckpt-every N`, default 5) as a model
+artifact aliased `latest`. You then fetch it to your Mac **any time**, decoupled
+from the training cell:
+
+```bash
+# local, one-time: pip install wandb ; wandb login  (key from wandb.ai/authorize)
+cd othello
+python run/pull_wandb.py --run run1            # grab the current weights now
+python run/pull_wandb.py --run run1 --watch 120   # keep the local copy fresh
+python serve/backend.py                        # play "AZ net" at http://127.0.0.1:8000
+```
+`--run run1` matches your `--wandb-run run1`. (Zero-setup alternative: open the run
+on wandb.ai → **Artifacts** → the model → **Download**, and drop `latest.pt` into
+`data/checkpoints/`.) So you can play the bot at iteration 12, 40, 200 — whatever it
+has reached — while it keeps training on Kaggle.
+
+## Pull the FINAL results to your machine (committed run)
+
+`pull_wandb.py` (above) is the live path. `pull_kaggle.py` is the after-the-fact
+path: it fetches a **committed** run's full output (checkpoint + `metrics.jsonl` +
+game records). Needs the Kaggle API token (setup **C**) and a committed run.
 
 ```bash
 cd othello

@@ -174,7 +174,13 @@ These will bite you if you change code without knowing them:
   process pushes each iteration to wandb.ai over the internet, which is the ONLY way
   to watch in-progress Kaggle training (pull/`kaggle kernels output` only publishes a
   COMMITTED run's output at completion — push-from-inside vs pull-artifact). Reuse the
-  same `--wandb-run` with `--resume` to continue one live curve. The **dashboard**
+  same `--wandb-run` with `--resume` to continue one live curve. **To PLAY the bot
+  mid-training** (Kaggle can't serve intermediate weights — one kernel, cells run
+  serially, and `kernels output` only publishes a COMMITTED run): with `--wandb`,
+  training uploads `latest.pt` to W&B as a `latest`-aliased artifact every
+  `--wandb-ckpt-every N` iters (default 5); `run/pull_wandb.py --run NAME` fetches it
+  locally any time. `pull_kaggle.py` is the after-a-commit path; `pull_wandb.py` is
+  the live path. The **dashboard**
   (`run/dashboard.py` static, or `/dashboard` live in `serve/backend.py`) reads
   this jsonl — both share ONE template `serve/frontend/dashboard.html`. If you add
   a metric, add it in `flat_metrics` (train_loop.py) AND as a chart/table column in
