@@ -348,6 +348,12 @@ def main():
                     help="run the minimax-ladder eval every N iterations (0 = never). "
                          "Default: from the config (kaggle=0/off, others=1). Eval is "
                          "inspection-only — it never affects what the net learns.")
+    ap.add_argument("--sims", type=int, default=None, metavar="N",
+                    help="MCTS simulations per move in SELF-PLAY (overrides cfg.sims_selfplay). "
+                         "Higher = stronger training targets but fewer games/sec. Vary it per "
+                         "resumed session for a low->high ramp (e.g. 96 then 200).")
+    ap.add_argument("--sims-eval", type=int, default=None, metavar="N",
+                    help="MCTS simulations per move in EVALUATION (overrides cfg.sims_eval).")
     ap.add_argument("--workers", type=int, default=None,
                     help="self-play worker processes (default from config; set to #CPU cores)")
     ap.add_argument("--device", default=None, help="override device (cuda/cpu/auto)")
@@ -379,6 +385,10 @@ def main():
         cfg, name = Config(), "full"
     if args.iterations is not None:
         cfg.iterations = args.iterations
+    if args.sims is not None:
+        cfg.sims_selfplay = args.sims
+    if args.sims_eval is not None:
+        cfg.sims_eval = args.sims_eval
     if args.workers is not None:
         cfg.selfplay_workers = args.workers
     if args.device:
@@ -388,7 +398,7 @@ def main():
     verb = "more iterations (resume)" if args.resume else "iterations"
     eval_note = "eval off" if cfg.eval_every == 0 else f"eval every {cfg.eval_every}"
     print(f"Training: {name} config, {cfg.iterations} {verb}, "
-          f"device={resolve_device(cfg.device)}, {eval_note}")
+          f"device={resolve_device(cfg.device)}, {cfg.sims_selfplay} self-play sims, {eval_note}")
     train(cfg, out_dir=args.out, use_tb=args.tensorboard, resume=args.resume,
           use_wandb=args.wandb, wandb_project=args.wandb_project, wandb_run=args.wandb_run,
           wandb_ckpt_every=args.wandb_ckpt_every)

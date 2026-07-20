@@ -79,12 +79,14 @@ Run from the `othello/` dir. `--out /kaggle/working/az_data` keeps outputs toget
 | Resume next session | `python run/train_loop.py --kaggle --resume auto --wandb --wandb-run run1 --out /kaggle/working/az_data` |
 | + strength curves | add `--eval-every 5` (win-rate / `max_depth_beaten` every 5 iters) |
 | Run more/fewer iters | add `--iterations N` (when resuming, N = N *more* iterations) |
+| Stronger training targets | add `--sims N` (MCTS sims/move in self-play; default 96). Higher = better targets, fewer games/sec |
 
 The flags that matter:
 - **`--kaggle`** — the GPU config: 5×64 net, array-ops self-play, `workers=1`, eval off, 30 iters, `device=cuda`.
 - **`--wandb [--wandb-run NAME]`** — stream metrics live to wandb.ai. Reuse the **same** NAME with `--resume` to continue **one** live curve across sessions.
 - **`--resume auto`** — continue the newest checkpoint (see next section). `--iterations N` then means N *more* iterations.
 - **`--eval-every N`** — minimax-ladder eval every N iters (**0 = off, the default**). It's inspection-only (never affects learning) and the slowest part of an iteration, so it's off by default; measure strength on demand with the web **Arena** instead, or turn it on here for live strength curves.
+- **`--sims N` / `--sims-eval N`** — MCTS simulations per move in self-play / eval (override `cfg.sims_selfplay` / `cfg.sims_eval`; defaults 96 / 128). More self-play sims = a stronger "teacher" → better training targets, at fewer games/sec. To ramp low→high, just pass a bigger `--sims` on later resumed sessions (e.g. session 1 `--sims 96`, session 2 `--resume auto --sims 200`).
 
 ## Resuming across sessions
 
