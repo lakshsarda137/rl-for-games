@@ -62,7 +62,10 @@
   .disc-ico { width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto; }
   .disc-ico.black { background: radial-gradient(circle at 34% 28%, #4c4c4c, #090909 76%); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
   .disc-ico.white { background: radial-gradient(circle at 34% 28%, #ffffff, #cdd2d9 78%); }
+  .team-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
   .team-name { color: var(--muted); font-size: 13.5px; }
+  .team-who { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .team.active .team-who { color: var(--muted); }
   .count { margin-left: auto; font-size: 25px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .5px; }
 
   /* ---- board ---- */
@@ -115,7 +118,6 @@
   .field:last-of-type { margin-bottom: 0; }
   .field > label { color: var(--muted); font-size: 13px; }
   .controls { display: flex; gap: 8px; min-width: 0; align-items: center; }
-  .subfield { margin: -3px 0 11px 53px; }
   .tag { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
   select, input[type=number] {
@@ -222,8 +224,8 @@
     <!-- board column -->
     <section>
       <div class="scoreboard">
-        <div class="team" id="teamBlack"><span class="disc-ico black"></span><span class="team-name">Black</span><span class="count" id="nBlack">2</span></div>
-        <div class="team" id="teamWhite"><span class="disc-ico white"></span><span class="team-name">White</span><span class="count" id="nWhite">2</span></div>
+        <div class="team" id="teamBlack"><span class="disc-ico black"></span><span class="team-meta"><span class="team-name">Black</span><span class="team-who" id="whoBlack"></span></span><span class="count" id="nBlack">2</span></div>
+        <div class="team" id="teamWhite"><span class="disc-ico white"></span><span class="team-meta"><span class="team-name">White</span><span class="team-who" id="whoWhite"></span></span><span class="count" id="nWhite">2</span></div>
       </div>
       <div class="board" id="board" role="grid" aria-label="Othello board, 8 by 8"></div>
       <div class="status" id="status" role="status" aria-live="polite">Choose players, then press New Game.</div>
@@ -236,22 +238,16 @@
         <div class="field">
           <label for="blackType">Black</label>
           <div class="controls">
-            <select id="blackType" aria-label="Black player type"></select>
+            <select id="blackType" aria-label="Black player"></select>
             <input type="number" id="blackParam" class="num" min="1" max="30" value="1" aria-label="Black difficulty">
           </div>
-        </div>
-        <div class="subfield" id="blackCkptRow" hidden>
-          <select id="blackCkpt" aria-label="Black AZ checkpoint"></select>
         </div>
         <div class="field">
           <label for="whiteType">White</label>
           <div class="controls">
-            <select id="whiteType" aria-label="White player type"></select>
+            <select id="whiteType" aria-label="White player"></select>
             <input type="number" id="whiteParam" class="num" min="1" max="30" value="4" aria-label="White difficulty">
           </div>
-        </div>
-        <div class="subfield" id="whiteCkptRow" hidden>
-          <select id="whiteCkpt" aria-label="White AZ checkpoint"></select>
         </div>
         <button class="btn primary block mt" id="newBtn">New Game</button>
       </div>
@@ -283,9 +279,6 @@
             <select id="arenaOpp" aria-label="Arena opponent"></select>
             <input type="number" id="arenaParam" class="num" value="2" aria-label="Opponent difficulty">
           </div>
-        </div>
-        <div class="subfield" id="arenaOppCkptRow" hidden>
-          <select id="arenaOppCkpt" aria-label="Opponent AZ checkpoint"></select>
         </div>
         <div class="field">
           <label>Match</label>
@@ -336,40 +329,56 @@ const $ = id => document.getElementById(id);
 const BLACK = 1, WHITE = -1, PASS = 64;
 let gameId = null, state = null, paused = false, busy = false, config = {};
 
-// ---------- player + checkpoint selects ----------
-function azLabel() { return config.az_iteration != null ? `AZ net · iter ${config.az_iteration}` : "AZ net"; }
-function playerOptions() {
-  const opts = [["human", "Human"], ["minimax", "Minimax"], ["random", "Random"], ["greedy", "Greedy"]];
-  if (config.az_available) opts.splice(1, 0, ["az", azLabel()]);
-  if (config.edax_available) opts.splice(config.az_available ? 3 : 2, 0, ["edax", "Edax"]);
-  return opts;
+// ---------- player selects ----------
+// Every AZ checkpoint is its OWN option (value "az@<label>"), so there is one
+// dropdown per player and no separate "which checkpoint" filter. The type value
+// fully identifies the player; the number box is its parameter (sims / depth / level).
+function ckptLabelText(c) {
+  return c.is_latest ? `latest · iter ${c.iteration ?? "?"}`
+    : c.iteration != null ? `iter ${c.iteration}` : c.label;
 }
-function fillSelect(sel, chosen) {
+function fillPlayerSelect(sel, { human = true, chosen } = {}) {
+  if (!sel) return;
   sel.innerHTML = "";
-  for (const [val, label] of playerOptions()) {
+  const add = (val, label, parent = sel) => {
     const o = document.createElement("option");
     o.value = val; o.textContent = label; if (val === chosen) o.selected = true;
-    sel.appendChild(o);
+    parent.appendChild(o);
+  };
+  if (human) add("human", "Human");
+  if (config.az_available && (config.checkpoints || []).length) {
+    const g = document.createElement("optgroup"); g.label = "AlphaZero net";
+    for (const c of config.checkpoints) add("az@" + c.label, "AZ · " + ckptLabelText(c), g);
+    sel.appendChild(g);
   }
+  const g2 = document.createElement("optgroup"); g2.label = "Engines & baselines";
+  add("minimax", "Minimax", g2);
+  if (config.edax_available) add("edax", "Edax", g2);
+  add("random", "Random", g2);
+  add("greedy", "Greedy", g2);
+  sel.appendChild(g2);
 }
-function ckptOptions() {
-  return (config.checkpoints || []).map(c =>
-    [c.label, c.is_latest ? `latest · iter ${c.iteration ?? "?"}` : `iter ${c.iteration}`]);
-}
+// The Arena AZ champion is always AZ, so its dropdown is checkpoint-only.
 function fillCkptSelect(sel) {
   if (!sel) return;
   sel.innerHTML = "";
-  for (const [val, label] of ckptOptions()) {
+  for (const c of (config.checkpoints || [])) {
     const o = document.createElement("option");
-    o.value = val; o.textContent = label; sel.appendChild(o);
+    o.value = c.label; o.textContent = ckptLabelText(c); sel.appendChild(o);
   }
 }
 function refreshCkptSelects() {
-  for (const id of ["blackCkpt", "whiteCkpt", "arenaChampCkpt", "arenaOppCkpt"]) {
-    const sel = $(id); if (!sel) continue;
-    const cur = sel.value; fillCkptSelect(sel);
+  const keep = (sel, fill) => {
+    if (!sel) return; const cur = sel.value; fill(sel);
     if ([...sel.options].some(o => o.value === cur)) sel.value = cur;   // keep selection if it survived
-  }
+  };
+  keep($("blackType"), s => fillPlayerSelect(s, { human: true }));
+  keep($("whiteType"), s => fillPlayerSelect(s, { human: true }));
+  keep($("arenaOpp"), s => fillPlayerSelect(s, { human: false }));
+  keep($("arenaChampCkpt"), fillCkptSelect);
+  syncParam($("blackType"), $("blackParam")); syncParam($("whiteType"), $("whiteParam"));
+  if ($("arenaOpp")) syncArenaParam();
+  updateWho();
 }
 function renderCkptList() {
   const ul = $("ckptList"); if (!ul) return;
@@ -398,25 +407,49 @@ async function deleteCkpt(c) {
     refreshCkptSelects(); renderCkptList();
   } catch (e) { alert("Could not delete: " + e.message); }
 }
-function needsParam(t) { return t === "minimax" || t === "edax" || t === "az"; }
-function syncParam(typeSel, paramInput, ckptRow) {
-  const t = typeSel.value;
-  paramInput.hidden = !needsParam(t);
-  if (ckptRow) ckptRow.hidden = (t !== "az");
-  if (t === "minimax") { paramInput.min = 1; paramInput.max = config.max_minimax_depth || 8; paramInput.title = "search depth"; if (+paramInput.value > paramInput.max || +paramInput.value < 1) paramInput.value = 4; }
-  else if (t === "edax") { paramInput.min = 0; paramInput.max = config.max_edax_level || 30; paramInput.title = "Edax level"; if (+paramInput.value > paramInput.max) paramInput.value = 6; }
-  else if (t === "az") {
+function paramKind(t) { return t.startsWith("az@") ? "az" : (t === "minimax" ? "minimax" : (t === "edax" ? "edax" : null)); }
+function syncParam(typeSel, paramInput) {
+  const k = paramKind(typeSel.value);
+  paramInput.hidden = !k;
+  if (k === "minimax") { paramInput.min = 1; paramInput.max = config.max_minimax_depth || 8; paramInput.title = "search depth"; if (+paramInput.value > paramInput.max || +paramInput.value < 1) paramInput.value = 4; }
+  else if (k === "edax") { paramInput.min = 0; paramInput.max = config.max_edax_level || 30; paramInput.title = "Edax level"; if (+paramInput.value > paramInput.max) paramInput.value = 6; }
+  else if (k === "az") {
     paramInput.min = config.min_az_sims || 10; paramInput.max = config.max_az_sims || 1000;
     paramInput.title = "MCTS sims/move — higher = stronger, slower";
     if (+paramInput.value < paramInput.min || +paramInput.value > paramInput.max) paramInput.value = config.default_az_sims || 120;
   }
 }
-function specOf(typeSel, paramInput, ckptSel) {
+function specOf(typeSel, paramInput) {
   const t = typeSel.value;
+  if (t.startsWith("az@")) return "az:" + paramInput.value + "@" + t.slice(3);   // t = "az@<ckpt>"
   if (t === "minimax") return "minimax:" + paramInput.value;
   if (t === "edax") return "edax:" + paramInput.value;
-  if (t === "az") return "az:" + paramInput.value + "@" + (ckptSel ? ckptSel.value : "latest");
   return t;
+}
+// Turn a backend spec string into a short human label — so a game/scoreboard shows
+// WHICH agent (and which AZ checkpoint) is playing, not a raw "az:80@iter0007".
+function prettySpec(spec) {
+  spec = (spec || "").toLowerCase();
+  if (!spec) return "";
+  if (spec === "human") return "Human";
+  if (spec === "random") return "Random";
+  if (spec === "greedy") return "Greedy";
+  if (spec.startsWith("minimax:")) return "Minimax d" + spec.split(":")[1];
+  if (spec.startsWith("edax")) return "Edax L" + (spec.split(":")[1] || "6");
+  if (spec.startsWith("az")) {
+    const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest";
+    if (ck === "latest") return "AZ latest" + (config.az_iteration != null ? ` (iter ${config.az_iteration})` : "");
+    const m = ck.match(/iter0*(\d+)/);
+    return m ? "AZ iter " + m[1] : "AZ " + ck;
+  }
+  return spec;
+}
+// Show each colour's player under its name (from the live game, or the pending picks).
+function updateWho() {
+  const bs = (gameId && state) ? state.black_spec : specOf($("blackType"), $("blackParam"));
+  const ws = (gameId && state) ? state.white_spec : specOf($("whiteType"), $("whiteParam"));
+  if ($("whoBlack")) $("whoBlack").textContent = prettySpec(bs);
+  if ($("whoWhite")) $("whoWhite").textContent = prettySpec(ws);
 }
 
 // ---------- board ----------
@@ -455,6 +488,7 @@ function render() {
   $("nWhite").textContent = s.white_count;
   $("teamBlack").classList.toggle("active", !!gameId && !s.done && s.player === BLACK);
   $("teamWhite").classList.toggle("active", !!gameId && !s.done && s.player === WHITE);
+  updateWho();
   renderStatus();
 }
 function renderStatus() {
@@ -469,7 +503,7 @@ function renderStatus() {
   const who = s.current_name, spec = s.player === BLACK ? s.black_spec : s.white_spec;
   if (s.must_pass) { st.innerHTML = `<b>${who}</b> must pass — no legal move`; return; }
   if (s.current_is_human) { st.innerHTML = `<b>${who}</b> to move — your turn`; return; }
-  st.innerHTML = `<span class="thinking"><i></i><i></i><i></i></span><b>${who}</b> thinking… <span class="muted">(${spec})</span>`;
+  st.innerHTML = `<span class="thinking"><i></i><i></i><i></i></span><b>${who}</b> thinking… <span class="muted">(${prettySpec(spec)})</span>`;
 }
 
 // ---------- game flow ----------
@@ -481,8 +515,8 @@ async function api(path, body) {
 async function newGame() {
   try {
     const res = await api("/api/new", {
-      black: specOf($("blackType"), $("blackParam"), $("blackCkpt")),
-      white: specOf($("whiteType"), $("whiteParam"), $("whiteCkpt")) });
+      black: specOf($("blackType"), $("blackParam")),
+      white: specOf($("whiteType"), $("whiteParam")) });
     gameId = res.game_id; state = res.state; paused = false; $("pauseBtn").textContent = "Pause";
     render(); tick();
   } catch (e) { $("status").textContent = "Could not start: " + e.message; }
@@ -509,32 +543,28 @@ function onCell(i) { if (state && state.current_is_human && !state.done) doMove(
 $("newBtn").addEventListener("click", newGame);
 $("pauseBtn").addEventListener("click", () => { paused = !paused; $("pauseBtn").textContent = paused ? "Resume" : "Pause"; if (!paused) tick(); });
 $("stepBtn").addEventListener("click", () => { if (state && !state.current_is_human && !state.done) botMove(); });
-for (const side of ["black", "white"]) $(side + "Type").addEventListener("change", () => syncParam($(side + "Type"), $(side + "Param"), $(side + "CkptRow")));
+for (const side of ["black", "white"]) {
+  $(side + "Type").addEventListener("change", () => { syncParam($(side + "Type"), $(side + "Param")); updateWho(); });
+  $(side + "Param").addEventListener("input", updateWho);   // keep the scoreboard identity live before a game
+}
 
 // ---------- arena ----------
-function arenaOppOptions() { return playerOptions().filter(([v]) => v !== "human"); }
 function fillArenaOpp() {
-  const sel = $("arenaOpp"); sel.innerHTML = "";
-  for (const [val, label] of arenaOppOptions()) {
-    const o = document.createElement("option");
-    o.value = val; o.textContent = label; if (val === "minimax") o.selected = true;
-    sel.appendChild(o);
-  }
+  fillPlayerSelect($("arenaOpp"), { human: false, chosen: "minimax" });   // any bot, each AZ ckpt its own option
   syncArenaParam();
 }
 function syncArenaParam() {
-  const t = $("arenaOpp").value, p = $("arenaParam");
-  p.hidden = !(t === "minimax" || t === "edax" || t === "az");
-  $("arenaOppCkptRow").hidden = (t !== "az");
-  if (t === "minimax") { p.min = 1; p.max = config.max_minimax_depth || 8; if (+p.value > p.max || +p.value < 1) p.value = 2; }
-  else if (t === "edax") { p.min = 0; p.max = config.max_edax_level || 30; if (+p.value > p.max) p.value = 6; }
-  else if (t === "az") { p.min = config.min_az_sims || 10; p.max = config.max_az_sims || 1000; if (+p.value < 10 || +p.value > 1000) p.value = 80; }
+  const t = $("arenaOpp").value, p = $("arenaParam"), k = paramKind(t);
+  p.hidden = !k;
+  if (k === "minimax") { p.min = 1; p.max = config.max_minimax_depth || 8; if (+p.value > p.max || +p.value < 1) p.value = 2; }
+  else if (k === "edax") { p.min = 0; p.max = config.max_edax_level || 30; if (+p.value > p.max) p.value = 6; }
+  else if (k === "az") { p.min = config.min_az_sims || 10; p.max = config.max_az_sims || 1000; if (+p.value < 10 || +p.value > 1000) p.value = 80; }
 }
 function arenaOppSpec() {
   const t = $("arenaOpp").value, p = $("arenaParam").value;
+  if (t.startsWith("az@")) return "az:" + (p || 80) + "@" + t.slice(3);
   if (t === "minimax") return "minimax:" + p;
   if (t === "edax") return "edax:" + p;
-  if (t === "az") return "az:" + (p || 80) + "@" + $("arenaOppCkpt").value;
   return t;
 }
 function buildMini(container) {
@@ -550,6 +580,7 @@ function paintCells(cs, board, last) {
   }
 }
 let arenaJob = null, arenaTimer = null, arenaFocus = 0, arenaTiles = [], arenaFocusCells = [], arenaBuilt = false, arenaGames = [];
+let arenaChampLabel = "AZ", arenaOppLabel = "opponent";
 async function startArena() {
   stopArenaPolling();
   $("arenaBtn").disabled = true; $("arenaOut").textContent = "Starting…";
@@ -586,8 +617,10 @@ function buildArenaTiles(n) {
   arenaFocusCells = buildMini($("alFocusBoard")); arenaBuilt = true;
 }
 function renderArena(j) {
-  $("alChampion").textContent = j.az_label || ("AZ " + (j.az_ckpt || "latest"));
-  $("alOpp").textContent = j.opp_label || j.opponent;
+  arenaChampLabel = j.az_label || ("AZ " + (j.az_ckpt || "latest"));
+  arenaOppLabel = j.opp_label || j.opponent;
+  $("alChampion").textContent = arenaChampLabel;
+  $("alOpp").textContent = arenaOppLabel;
   const st = j.error ? "error" : j.done ? (j.cancel ? "stopped" : "done") : (j.paused ? "paused" : "running");
   $("alState").textContent = st; $("alState").className = "pill " + st;
   $("alPause").textContent = j.paused ? "Resume" : "Pause";
@@ -617,9 +650,10 @@ function updateFocus() {
   if (!arenaFocusCells.length) return;
   const g = arenaGames[arenaFocus]; if (!g) return;
   paintCells(arenaFocusCells, g.board, g.last_move);
-  const azc = g.az_is === BLACK ? "Black" : "White";
-  const oc = g.done ? (g.aborted ? "aborted" : { W: "AZ won", L: "AZ lost", D: "draw" }[g.az_outcome]) : "in progress";
-  $("alFocusLabel").innerHTML = `Game ${g.idx + 1} — AZ plays <b>${azc}</b> · ${g.black_count}–${g.white_count} · ply ${g.ply} · ${oc}`;
+  const champColor = g.az_is === BLACK ? "Black" : "White";
+  const oppColor = g.az_is === BLACK ? "White" : "Black";
+  const oc = g.done ? (g.aborted ? "aborted" : { W: `${arenaChampLabel} won`, L: `${arenaChampLabel} lost`, D: "draw" }[g.az_outcome]) : "in progress";
+  $("alFocusLabel").innerHTML = `Game ${g.idx + 1} — <b>${champColor}:</b> ${arenaChampLabel} · <b>${oppColor}:</b> ${arenaOppLabel} &nbsp;·&nbsp; ${g.black_count}–${g.white_count} · ply ${g.ply} · ${oc}`;
   arenaTiles.forEach((t, i) => t.tile.classList.toggle("focused", i === arenaFocus));
 }
 async function arenaControl(action) {
@@ -632,16 +666,16 @@ async function arenaControl(action) {
 (async function init() {
   buildBoard(); state = previewState(); render();
   config = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
-  fillSelect($("blackType"), "human"); fillSelect($("whiteType"), "minimax");
-  for (const side of ["black", "white"]) fillCkptSelect($(side + "Ckpt"));
-  syncParam($("blackType"), $("blackParam"), $("blackCkptRow"));
-  syncParam($("whiteType"), $("whiteParam"), $("whiteCkptRow"));
+  fillPlayerSelect($("blackType"), { human: true, chosen: "human" });
+  fillPlayerSelect($("whiteType"), { human: true, chosen: "minimax" });
+  syncParam($("blackType"), $("blackParam"));
+  syncParam($("whiteType"), $("whiteParam"));
   render();
   if (config.az_available) {
     $("arenaBox").hidden = false;
     $("arenaSims").value = config.default_az_sims ? Math.min(80, config.default_az_sims) : 80;
     $("arenaWorkers").max = config.max_arena_workers || 8;
-    fillCkptSelect($("arenaChampCkpt")); fillCkptSelect($("arenaOppCkpt"));
+    fillCkptSelect($("arenaChampCkpt"));
     fillArenaOpp();
     $("arenaOpp").addEventListener("change", syncArenaParam);
     $("arenaBtn").addEventListener("click", startArena);
@@ -651,7 +685,7 @@ async function arenaControl(action) {
   }
   const hints = [];
   hints.push(config.az_available
-    ? `AZ net loaded (iter ${config.az_iteration ?? "?"}). Pick “AZ net” for either side; the number is MCTS sims/move.`
+    ? `AZ net loaded — each checkpoint is its own option in the player menus; the number box is MCTS sims/move.`
     : "No trained model yet — run training to play the AZ net here.");
   hints.push(config.edax_available
     ? "Edax is installed — try White = Edax (even level 1–2 is very strong)."
