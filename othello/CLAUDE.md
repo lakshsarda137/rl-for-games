@@ -83,35 +83,47 @@ runnable artifact. See `README.md` for structure.
   greedy move-for-move AND is byte-identical to the NumPy array-ops path with noise+temperature
   (`tests/test_batched.py`, `tests/test_az.py`, all green, FAST budget still <20s). Wired **OPT-IN**
   via `--selfplay-torch` / `cfg.selfplay_torch` (`_play_batch_torch`); the NumPy array-ops path stays
-  the default. **⚠ GPU SPEED IS UNMEASURED** — the throughput payoff needs a Kaggle smoke; the port is
-  welded to a big `--games` batch (per-step op-launch cost is fixed regardless of batch size, so it
-  only amortises at large batch). Do NOT claim it's faster until measured on a GPU.
+  the default. **GPU SPEED NOW MEASURED on a T4 (see next bullet)** — it scales with batch but tops out
+  ~2 g/s and is parked as opt-in; NumPy stays the training path.
+- **Torch GPU-search port MEASURED on a T4 (2026-07-20) — parked as opt-in; NumPy is the training path.**
+  Smoke sweep on a Kaggle T4 (10×128 net, 96 sims, eval off), Torch self-play **g/s vs batch: 0.5 @96
+  games / 1.5 @512 / 2.0 @1024; GPU util 41% / 62% / 76%**. So it DOES scale with batch (amortises the
+  fixed per-step op-launch cost) and does move the search onto the GPU — BUT: (a) at the batch training
+  actually wants (~96 games) it's **3× SLOWER** than NumPy (0.5 vs 1.5 g/s), and (b) even at 1024 games
+  it only reaches ~2.0 g/s ≈ the OLD 5×64 NumPy ceiling. The T4 tops out ~2–2.5 g/s because the search
+  is **op-launch/sync-bound** (CPU pegged, GPU mem ~5% used, util capped ~76%), not compute-bound. Its
+  fast regime (huge batch) is the opposite of training's (many iterations at moderate batch), so on a T4
+  it isn't worth using. **DECISION (user, 2026-07-20): train on the NumPy array-ops path; keep
+  `--selfplay-torch` as a verified, parked opt-in for future better hardware (A100) or an op-fusion
+  (`torch.compile`/CUDA-graphs/Triton) follow-up.** The port is correct, not wasted — it just doesn't
+  win on this GPU. Honest arc, measured not guessed.
+- **First real 10×128 run (2026-07-20): from scratch, `--kaggle --sims 110 --iterations 30 --wandb
+  --wandb-run run2`, 96 games/iter, eval off, NumPy array-ops on a T4.** The proper strength run:
+  bigger net + more sims + live W&B. Watch on wandb.ai; `pull_wandb.py --run run2` to play mid-training.
 
 ## Next steps (in likely order)
 
-> **▶ CURRENT PRIORITY (updated 2026-07-20): the two "scaling for strength" levers are BUILT + verified
-> on CPU — now MEASURE the Torch search on a GPU and RUN the bigger net for real.** Both prior-priority
-> items landed this session: (a) net bumped to **10×128** in `Config.kaggle()` (`--net BxC` to override,
-> `--games N` for batch size); (b) the batched engine + MCTS are ported to **device-agnostic Torch**
-> (`engine/board_torch.py`, `az/mcts_torch.py`), wired opt-in as **`--selfplay-torch`**, and
-> correctness-verified bit-for-bit against the NumPy/serial oracles on CPU (see the status bullet +
-> item 3). The open work now, in order:
+> **▶ CURRENT PRIORITY (updated 2026-07-20): a real 10×128 training run is IN PROGRESS on the NumPy
+> path; next work is WEB-APP / BENCHMARK polish while it trains.** The scaling exploration is settled:
+> net bumped to 10×128, Torch search port built + measured on a T4 and PARKED (op-launch-bound, ~2 g/s
+> ceiling — see the status bullets; decision: train on NumPy). The first real run is
+> `--kaggle --sims 110 --iterations 30 --wandb --wandb-run run2` (96 games/iter, from scratch). Open work:
 >
-> 1. **Smoke the Torch search on a Kaggle GPU and MEASURE g/s.** Run
->    `python run/train_loop.py --kaggle --selfplay-torch --games N --device cuda` with a BIG `N` and
->    compare g/s to the NumPy array-ops baseline (~2.1 g/s on a T4). The port is welded to a big batch
->    (per-step op-launch cost is fixed regardless of games), so sweep `--games` up. **Big batch is
->    NECESSARY, maybe not SUFFICIENT** — ~1M tiny op-launches/round set a floor only a real GPU run
->    settles (op fusion via `torch.compile`/Triton is the escape hatch, hard with MCTS's dynamic control
->    flow). If it wins: raise `--games` and consider making `selfplay_torch` the kaggle default. State
->    honestly what the smoke does/doesn't show BEFORE running it (this user checks).
-> 2. **Train the 10×128 net for real, longer.** Bigger net = higher ceiling but needs more
->    iterations/data — run more `--iterations` across resumed W&B sessions and watch strength climb.
+> 1. **Let the run train; watch strength.** ~2 g/s on a T4 → a 30-iter run is well under an hour.
+>    Watch loss/g/s live on wandb.ai; pull to play mid-training. Resume across sessions with the SAME
+>    `--wandb-run run2` + `--resume auto` for a longer run. Strength = net size × iterations.
+> 2. **Web app + benchmark polish (user asked, 2026-07-20)** — see next-steps items 4–6. The concrete
+>    asks: (a) the Othello board renders with non-square cells (aspect-ratio CSS bug) — first + cheap;
+>    (b) the **Arena** (N-game match) needs pause/stop, live **spectate**, and games run **in parallel**
+>    with the option to watch any one of the N; (c) a way to **benchmark past checkpoints** head-to-head
+>    (see item 5 — checkpoints already persist per-iter; the gap is loading a SPECIFIC one as a player).
+>    Do these as focused work WITH visual verification (launch the app + screenshot), not blind edits.
 >
-> **Bottleneck cheat-sheet (unchanged):** more **sims / more games → CPU** on the NumPy path
-> (search+rules are NumPy, ~87% of self-play — the wall the Torch port targets). Bigger **net → GPU**
-> (idle, cheap — done). The Torch path aims to move the search itself onto the GPU so sims/games get
-> cheap there too — pending the g/s measurement above.
+> **Bottleneck cheat-sheet (settled):** more **sims / more games → CPU** on the NumPy path (search+rules
+> are NumPy, ~87% of self-play). Bigger **net → GPU** (cheap). The Torch port moved the search onto the
+> GPU but the T4 is op-launch-bound there (~2 g/s), so it doesn't win — NumPy is the training path. A
+> real search speedup would need op-fusion (`torch.compile`/CUDA-graphs/Triton, hard with MCTS's dynamic
+> control flow) or better hardware; not worth it for this project now.
 
 1. **Self-play throughput — DONE.** Best GPU config is **single-process array-ops, ~2.1 g/s on a T4**
    (~5× the 0.4 baseline). `kaggle` config = array-ops, `selfplay_workers=1`. **On a GPU keep
@@ -159,8 +171,9 @@ runnable artifact. See `README.md` for structure.
      download the latest `data/checkpoints/latest.pt` (or `iter####.pt`) each session and
      `--resume auto` it next session; watch `max_depth_beaten` climb toward depth-4 on the dashboard.
      This is the payoff of all the throughput work.
-3. **Port the batched engine + MCTS to Torch tensors — ✅ BUILT + CPU-VERIFIED (2026-07-20); GPU speed
-   still to be measured.** `engine/board_torch.py` + `az/mcts_torch.py` are the op-for-op Torch
+3. **Port the batched engine + MCTS to Torch tensors — ✅ BUILT + CPU-VERIFIED + T4-MEASURED (2026-07-20);
+   PARKED (op-launch-bound on a T4, ~2 g/s, doesn't beat NumPy — see status bullets).**
+   `engine/board_torch.py` + `az/mcts_torch.py` are the op-for-op Torch
    re-expression of `board_batched`/`mcts_batched`, so the tree-search + game-rules (the NumPy=CPU wall)
    run on `device`. Self-play driver: `selfplay._play_batch_torch` (torch twin of `_play_batch`), opt-in
    via `cfg.selfplay_torch` / `--selfplay-torch`; `make_net_evaluator_torch` keeps the net eval on-device
@@ -176,10 +189,22 @@ runnable artifact. See `README.md` for structure.
    NECESSARY, maybe not SUFFICIENT**: the ~1M tiny op-launches/round set a floor only a GPU run (or op
    fusion via `torch.compile`/Triton, hard with dynamic MCTS control flow) settles. On the CPU path a
    bigger batch just costs proportionally more, so the payoff is a GPU-only question — go measure it.
-4. **Wire self-play records into the web UI** (watch/replay mode; records already exist
-   in `data/game_records/`).
-5. **Elo + promotion gating** in evaluation (currently just win-rate ladder).
-6. **Polish the web UI** — the user finds it visually rough; a design pass is wanted.
+4. **Web app — the user's concrete asks (2026-07-20), do these WITH visual verification:**
+   - **Board aspect-ratio bug** — cells render as rectangles, not squares (some square, some not). CSS
+     fix in `serve/frontend/index.html` (enforce `aspect-ratio:1` / square grid). Cheapest + most visible.
+   - **Arena controls** — the N-game match (`POST /api/arena`, runs sequentially in a bg thread) has NO
+     pause/stop and reports only a tally. Add: cancel/stop, and **spectate** (expose per-game live board
+     state; currently only aggregate progress). Then run the N games **in parallel** and let the user
+     watch any one of the N live. Backend (`serve/backend.py` arena job) + frontend both change.
+   - **Spectate self-play records** — watch/replay mode from `data/game_records/*.json` (records exist,
+     UI not built).
+5. **Benchmark past checkpoints head-to-head + Elo/promotion gating.** Checkpoints ALREADY persist every
+   iteration (`data/checkpoints/iterNNNN.pt`; W&B uploads every `--wandb-ckpt-every` iters aliased
+   `iterN`), so past agents are saved. The GAP: the web app / Arena loads only `latest.pt`
+   (`latest_checkpoint`) — add a picker to load a SPECIFIC checkpoint as a player (e.g. `az:iter0010`)
+   so you can Arena iterN vs iterM vs edax and chart a strength curve. Then Elo instead of a raw win-rate
+   ladder.
+6. **General web-UI polish / design pass** — the user finds it visually rough beyond the board bug.
 
 ## Non-obvious architectural decisions
 These will bite you if you change code without knowing them:

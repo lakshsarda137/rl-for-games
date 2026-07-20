@@ -84,7 +84,7 @@ Run from the `othello/` dir. `--out /kaggle/working/az_data` keeps outputs toget
 | Stronger training targets | add `--sims N` (MCTS sims/move in self-play; default 96). Higher = better targets, fewer games/sec |
 | Bigger/smaller net | add `--net BxC` (default `10x128`; `--net 5x64` = the old quick net) |
 | More games per iter | add `--games N` (self-play batch size; default 96) |
-| GPU search (experimental) | add `--selfplay-torch --games N` (runs the SEARCH on the GPU, not just the net; use a BIG N and compare g/s to the default) |
+| GPU search (parked) | `--selfplay-torch --games N` runs the SEARCH on the GPU — measured on a T4, caps ~2 g/s and loses to NumPy at small batch, so NOT recommended there (see the flag note below) |
 
 The flags that matter:
 - **`--kaggle`** — the GPU config: 10×128 net, array-ops self-play, `workers=1`, eval off, 30 iters, `device=cuda`.
@@ -93,9 +93,10 @@ The flags that matter:
 - **`--games N`** — self-play games per iteration (default 96). Pair a big N with `--selfplay-torch`.
 - **`--selfplay-torch`** — run array-ops self-play on the **Torch** engine + MCTS so the whole *search*
   runs on the GPU (the NumPy default keeps the search on the CPU; only the net is on-device). Correctness
-  is proven identical to the NumPy path; the **speed is experimental** — use a big `--games` batch (the
-  per-step cost is fixed regardless of batch, so it only amortises when many games run at once) and
-  compare the `g/s` line to a plain `--kaggle` run before trusting it.
+  is proven identical to the NumPy path. **MEASURED on a T4 (2026-07-20): not worth it there** — g/s vs
+  batch was 0.5 @96 / 1.5 @512 / 2.0 @1024 games; it scales with batch but caps ~2 g/s (op-launch-bound,
+  GPU only ~76% at best) and is *slower* than NumPy at the ~96-game batch training wants. Parked as a
+  verified opt-in for better GPUs / a future op-fusion pass. **For training, use the plain NumPy path.**
 - **`--wandb [--wandb-run NAME]`** — stream metrics live to wandb.ai. Reuse the **same** NAME with `--resume` to continue **one** live curve across sessions.
 - **`--resume auto`** — continue the newest checkpoint (see next section). `--iterations N` then means N *more* iterations.
 - **`--eval-every N`** — minimax-ladder eval every N iters (**0 = off, the default**). It's inspection-only (never affects learning) and the slowest part of an iteration, so it's off by default; measure strength on demand with the web **Arena** instead, or turn it on here for live strength curves.
@@ -183,7 +184,7 @@ them for manual download if you'd rather not use the API.
 - **Throughput:** the default lever is NumPy array-ops self-play (~2.1 g/s on a T4, ~5×
   the 0.4 baseline), whose tree-search/rules math is NumPy-on-CPU (only the network is on
   the GPU — the known ceiling). The **`--selfplay-torch`** path moves that search onto the
-  GPU too; it's correctness-proven but its speed is still to be measured (see CLAUDE.md
-  next-steps item 1) — that's the point of smoking it with a big `--games` and reading g/s.
+  GPU too, but was measured on a T4 (0.5/1.5/2.0 g/s at 96/512/1024 games) to be op-launch-bound
+  and no faster than NumPy, so it's parked. NumPy array-ops is the training path.
 - **TensorBoard** stays off (protobuf clash in some images); `metrics.jsonl` + W&B
   are the metric sinks. `metrics.jsonl` is always the source of truth.
