@@ -356,6 +356,17 @@ def main():
                     help="MCTS simulations per move in EVALUATION (overrides cfg.sims_eval).")
     ap.add_argument("--workers", type=int, default=None,
                     help="self-play worker processes (default from config; set to #CPU cores)")
+    ap.add_argument("--net", default=None, metavar="BxC",
+                    help="override network size as BLOCKSxCHANNELS (e.g. 10x128). Bigger = "
+                         "stronger ceiling but needs more iterations. On resume the checkpoint's "
+                         "own architecture wins (weights must match).")
+    ap.add_argument("--games", type=int, default=None, metavar="N",
+                    help="self-play games per iteration (overrides cfg.games_per_iter). The "
+                         "torch search path (--selfplay-torch) wants a big batch here.")
+    ap.add_argument("--selfplay-torch", action="store_true",
+                    help="run array-ops self-play on the TORCH engine + MCTS so the whole search "
+                         "runs on the GPU (not just the net). Device-agnostic; pair with a big "
+                         "--games batch. Opt-in — measure the g/s before relying on it.")
     ap.add_argument("--device", default=None, help="override device (cuda/cpu/auto)")
     ap.add_argument("--tensorboard", action="store_true",
                     help="also log to TensorBoard (needs a compatible protobuf)")
@@ -385,6 +396,16 @@ def main():
         cfg, name = Config(), "full"
     if args.iterations is not None:
         cfg.iterations = args.iterations
+    if args.net is not None:
+        try:
+            nb, ch = args.net.lower().split("x")
+            cfg.num_blocks, cfg.channels = int(nb), int(ch)
+        except ValueError:
+            ap.error(f"--net expects BLOCKSxCHANNELS (e.g. 10x128), got {args.net!r}")
+    if args.games is not None:
+        cfg.games_per_iter = args.games
+    if args.selfplay_torch:
+        cfg.selfplay_torch = True
     if args.sims is not None:
         cfg.sims_selfplay = args.sims
     if args.sims_eval is not None:
@@ -397,8 +418,12 @@ def main():
         cfg.eval_every = args.eval_every
     verb = "more iterations (resume)" if args.resume else "iterations"
     eval_note = "eval off" if cfg.eval_every == 0 else f"eval every {cfg.eval_every}"
+    sp_backend = "torch-search" if getattr(cfg, "selfplay_torch", False) else (
+        "arrayops" if cfg.selfplay_arrayops else "pool")
     print(f"Training: {name} config, {cfg.iterations} {verb}, "
-          f"device={resolve_device(cfg.device)}, {cfg.sims_selfplay} self-play sims, {eval_note}")
+          f"net {cfg.num_blocks}x{cfg.channels}, device={resolve_device(cfg.device)}, "
+          f"{cfg.games_per_iter} games/iter, {cfg.sims_selfplay} self-play sims "
+          f"({sp_backend}), {eval_note}")
     train(cfg, out_dir=args.out, use_tb=args.tensorboard, resume=args.resume,
           use_wandb=args.wandb, wandb_project=args.wandb_project, wandb_run=args.wandb_run,
           wandb_ckpt_every=args.wandb_ckpt_every)

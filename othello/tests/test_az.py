@@ -27,6 +27,7 @@ from selfplay import (
     _chunk,
     _play_batch,
     _play_batch_parallel,
+    _play_batch_torch,
     _play_parallel,
     _play_pool,
     generate_games,
@@ -187,6 +188,32 @@ def test_arrayops_selfplay_matches_serial_greedy():
           and abs(float(pi.sum()) - 1.0) < 1e-4 and z in (-1.0, 0.0, 1.0))
 
 
+def test_torch_selfplay_matches_serial_greedy():
+    """The TORCH self-play path (device-agnostic board_torch + mcts_torch, so the
+    whole search can run on the GPU) plays the SAME game as the trusted serial MCTS
+    when greedy + noise-free — an end-to-end check of the whole torch loop (search,
+    passes, terminal detection, history, z-stamping). So on a GPU it runs the
+    identical game, just with the search on-device instead of on the CPU. The
+    stronger byte-for-byte match to the NumPy array-ops path (with noise) is the
+    SLOW `test_torch_selfplay_matches_numpy_arrayops`."""
+    from types import SimpleNamespace
+    net = _tiny_net()
+    ev = Evaluator(net)
+    cfg = SimpleNamespace(c_puct=1.5, dirichlet_alpha=0.3, dirichlet_eps=0.25,
+                          sims_selfplay=12, temp_moves=0, augment=False)
+
+    board, player, ref = initial_board(), BLACK, []      # deterministic serial game
+    m = MCTS(ev, c_puct=1.5)
+    while not is_terminal(board):
+        move = int(m.run(board, int(player), cfg.sims_selfplay, add_noise=False).argmax())
+        ref.append(move)
+        board = apply_move(board, int(player), move); player = -player
+
+    pg = _play_batch_torch(ev, cfg, np.random.default_rng(0), 3, make_records=True, add_noise=False)
+    check("torch greedy self-play == serial greedy, move-for-move",
+          all([e["move"] for e in pg[g][1]["moves"]] == ref for g in range(3)))
+
+
 def test_overfit_tiny():
     """The net memorises a handful of fixed positions -> loss ~0 (training works)."""
     net = _tiny_net()
@@ -272,6 +299,27 @@ def test_arrayops_parallel_matches_inprocess():
         shutdown_selfplay_workers()
 
 
+def test_torch_selfplay_matches_numpy_arrayops():
+    """The torch self-play path reproduces the NumPy array-ops path byte-for-byte
+    given the same master rng, even WITH Dirichlet noise + temperature sampling —
+    the search is bit-exact on CPU tensors, so the two paths are interchangeable
+    (torch just lets the search run on the GPU). SLOW: two full self-play batches."""
+    from types import SimpleNamespace
+    net = _tiny_net()
+    ev = Evaluator(net)
+    cfg = SimpleNamespace(c_puct=1.5, dirichlet_alpha=0.3, dirichlet_eps=0.25,
+                          sims_selfplay=12, temp_moves=4, augment=True)
+    np_games = _play_batch(ev, cfg, np.random.default_rng(3), 4)
+    tt_games = _play_batch_torch(ev, cfg, np.random.default_rng(3), 4)
+    same = len(np_games) == len(tt_games) and all(
+        len(a[0]) == len(b[0]) and all(
+            np.array_equal(x[0], y[0]) and np.array_equal(x[1], y[1])
+            and np.array_equal(x[2], y[2]) and x[3] == y[3]
+            for x, y in zip(a[0], b[0]))
+        for a, b in zip(np_games, tt_games))
+    check("torch self-play == numpy array-ops byte-for-byte (noise+temp, same rng)", same)
+
+
 # --- whole loop (slow) -------------------------------------------------------
 def test_train_loop_end_to_end():
     from train_loop import train
@@ -318,8 +366,9 @@ def test_resume_continues_training():
 FAST = [test_network_and_evaluator, test_mcts_basic, test_replay_buffer,
         test_selfplay_produces_valid_examples, test_evaluate_batch_matches_single,
         test_batched_selfplay_matches_serial, test_arrayops_selfplay_matches_serial_greedy,
-        test_overfit_tiny]
+        test_torch_selfplay_matches_serial_greedy, test_overfit_tiny]
 SLOW = [test_parallel_selfplay_matches_inprocess, test_arrayops_parallel_matches_inprocess,
+        test_torch_selfplay_matches_numpy_arrayops,
         test_train_loop_end_to_end, test_resume_continues_training]
 
 if __name__ == "__main__":
