@@ -6,261 +6,327 @@
 <title>Othello</title>
 <style>
   :root {
-    --bg: #0f1115; --panel: #1a1d24; --ink: #e8eaed; --muted: #9aa0aa;
-    --line: #2a2e37; --accent: #4a9eff; --board: #1b7a43;
-    --board-line: #0f5c31; --legal: #ffd34e;
+    --bg: #0b0d11; --bg-grad: radial-gradient(1200px 700px at 50% -10%, #141926 0%, #0b0d11 55%);
+    --card: #151922; --card-2: #1b2028; --inset: #0f131a;
+    --line: #262c37; --line-2: #333b48;
+    --ink: #e8eaef; --muted: #98a0ad; --faint: #6a7280;
+    --primary: #5b8cff; --primary-2: #3f74f5; --on-primary: #ffffff;
+    --good: #46c96f; --bad: #f26a6a; --warn: #f3c04e;
+    --felt: #1c7a46; --felt-line: #0d5230; --felt-hi: #24925a;
+    --shadow: 0 20px 45px rgba(0,0,0,.5);
+    --r-lg: 16px; --r-md: 12px; --r-sm: 9px;
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5l3.5 3 3.5-3' fill='none' stroke='%2398a0ad' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
   * { box-sizing: border-box; }
-  [hidden] { display: none !important; }   /* .row{display:flex} would otherwise beat the UA [hidden] rule */
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
   body {
-    margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    background: var(--bg); color: var(--ink);
-    display: flex; flex-direction: column; align-items: center; padding: 20px;
+    margin: 0; padding: 28px 20px 48px;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg-grad); background-color: var(--bg); color: var(--ink);
+    -webkit-font-smoothing: antialiased;
   }
-  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: .3px; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
-  .layout { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
+  .wrap { max-width: 1000px; margin: 0 auto; }
+
+  /* ---- top bar ---- */
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 13px; }
+  .brand .mark {
+    width: 40px; height: 40px; border-radius: 11px; flex: 0 0 auto;
+    background: linear-gradient(150deg, var(--felt-hi), var(--felt-line));
+    display: grid; place-items: center; box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 4px 12px rgba(0,0,0,.4);
+  }
+  .brand .mark::before { content: ""; width: 15px; height: 15px; border-radius: 50%; background: radial-gradient(circle at 34% 28%, #fff, #cfd4db 78%); box-shadow: 6px 0 0 -1px #0a0a0a; }
+  h1 { font-size: 21px; margin: 0; letter-spacing: .2px; font-weight: 650; }
+  .tagline { margin: 1px 0 0; color: var(--muted); font-size: 13px; }
+  .link-btn {
+    display: inline-flex; align-items: center; gap: 7px; text-decoration: none;
+    color: var(--ink); background: var(--card); border: 1px solid var(--line);
+    padding: 9px 14px; border-radius: var(--r-sm); font-size: 13.5px; font-weight: 550;
+    transition: border-color .15s, background .15s;
+  }
+  .link-btn:hover { border-color: var(--line-2); background: var(--card-2); }
+
+  /* ---- layout ---- */
+  .app { display: grid; grid-template-columns: minmax(0, 1fr) 336px; gap: 26px; align-items: start; }
+  @media (max-width: 780px) { .app { grid-template-columns: 1fr; } }
+
+  /* ---- scoreboard ---- */
+  .scoreboard { display: flex; gap: 12px; margin-bottom: 14px; }
+  .team {
+    flex: 1; display: flex; align-items: center; gap: 11px; padding: 11px 15px;
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .team.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary), 0 6px 18px rgba(91,140,255,.14); }
+  .disc-ico { width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto; }
+  .disc-ico.black { background: radial-gradient(circle at 34% 28%, #4c4c4c, #090909 76%); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+  .disc-ico.white { background: radial-gradient(circle at 34% 28%, #ffffff, #cdd2d9 78%); }
+  .team-name { color: var(--muted); font-size: 13.5px; }
+  .count { margin-left: auto; font-size: 25px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .5px; }
 
   /* ---- board ---- */
   .board {
-    display: grid;
-    grid-template-columns: repeat(8, 1fr);
-    grid-template-rows: repeat(8, 1fr);   /* square cells: rows must be 1fr too, not content-height */
-    gap: 3px;
-    background: var(--board-line); padding: 10px; border-radius: 10px;
-    width: min(88vw, 480px); aspect-ratio: 1;
-    box-shadow: 0 10px 30px rgba(0,0,0,.4);
+    display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+    gap: 2px; padding: 10px; border-radius: var(--r-md); aspect-ratio: 1; width: 100%;
+    background: linear-gradient(160deg, #1a7a48, #0f5c34);
+    box-shadow: inset 0 2px 14px rgba(0,0,0,.32), var(--shadow);
   }
   .cell {
-    background: var(--board); border: none; border-radius: 4px; padding: 0;
-    position: relative; cursor: default; display: grid; place-items: center;
-    aspect-ratio: 1; min-width: 0; min-height: 0;   /* belt-and-braces squareness */
+    background: var(--felt); border: 0; padding: 0; border-radius: 3px; position: relative;
+    display: grid; place-items: center; cursor: default; aspect-ratio: 1; min-width: 0; min-height: 0;
     transition: background .12s;
   }
   .cell.playable { cursor: pointer; }
-  .cell.playable:hover, .cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .disc {
-    width: 78%; aspect-ratio: 1; border-radius: 50%;
-    transition: transform .15s ease; transform: scale(1);
-  }
-  .disc.black { background: radial-gradient(circle at 35% 30%, #444, #050505); box-shadow: 0 2px 4px rgba(0,0,0,.5); }
-  .disc.white { background: radial-gradient(circle at 35% 30%, #fff, #c8ccd2); box-shadow: 0 2px 4px rgba(0,0,0,.4); }
+  .cell.playable:hover { background: var(--felt-hi); }
+  .cell:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+  .disc { width: 80%; aspect-ratio: 1; border-radius: 50%; box-shadow: 0 2px 5px rgba(0,0,0,.45); }
+  .disc.black { background: radial-gradient(circle at 35% 28%, #505050, #0a0a0a 76%); }
+  .disc.white { background: radial-gradient(circle at 35% 28%, #ffffff, #ccd1d8 78%); }
   .cell.legal::after {
-    content: ""; width: 26%; aspect-ratio: 1; border-radius: 50%;
-    background: var(--legal); opacity: .55; position: absolute;
+    content: ""; position: absolute; width: 24%; aspect-ratio: 1; border-radius: 50%;
+    background: rgba(255,255,255,.5); transition: background .12s;
   }
-  .cell.last { box-shadow: inset 0 0 0 3px var(--legal); }
+  .cell.playable:hover.legal::after { background: rgba(255,255,255,.82); }
+  .cell.last { box-shadow: inset 0 0 0 3px rgba(255,209,102,.9); }
 
-  /* ---- panel ---- */
-  .panel {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-    padding: 18px; width: 300px; display: flex; flex-direction: column; gap: 14px;
+  /* ---- status ---- */
+  .status {
+    margin-top: 14px; padding: 12px 15px; border-radius: var(--r-md); font-size: 14px;
+    background: var(--inset); border: 1px solid var(--line); display: flex; align-items: center; gap: 9px;
   }
-  .scores { display: flex; gap: 10px; }
-  .score {
-    flex: 1; text-align: center; padding: 10px; border-radius: 10px;
-    background: #12151b; border: 1px solid var(--line);
+  .status.win { border-color: rgba(243,192,78,.45); color: var(--warn); }
+  .status .muted { color: var(--muted); }
+  .thinking { display: inline-flex; gap: 3px; }
+  .thinking i { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); animation: blink 1s infinite both; }
+  .thinking i:nth-child(2) { animation-delay: .18s; } .thinking i:nth-child(3) { animation-delay: .36s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .25 } 40% { opacity: 1 } }
+
+  /* ---- side cards ---- */
+  .side { display: flex; flex-direction: column; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px 16px 17px; }
+  .card > h2 {
+    display: flex; align-items: baseline; gap: 8px; margin: 0 0 13px;
+    font-size: 11.5px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--muted);
   }
-  .score .n { font-size: 26px; font-weight: 700; }
-  .score .who { font-size: 12px; color: var(--muted); }
-  .score.turn { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-  .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -1px; margin-right: 5px; }
-  .dot.black { background: #111; border: 1px solid #555; }
-  .dot.white { background: #f4f4f4; }
+  .card > h2 .note { font-weight: 500; letter-spacing: .02em; text-transform: none; color: var(--faint); font-size: 11.5px; }
 
-  .status { min-height: 40px; padding: 10px 12px; border-radius: 10px; background: #12151b;
-            border: 1px solid var(--line); font-size: 14px; }
-  .status.win { border-color: var(--legal); color: var(--legal); font-weight: 600; }
+  .field { display: grid; grid-template-columns: 42px 1fr; align-items: center; gap: 11px; margin-bottom: 11px; }
+  .field:last-of-type { margin-bottom: 0; }
+  .field > label { color: var(--muted); font-size: 13px; }
+  .controls { display: flex; gap: 8px; min-width: 0; align-items: center; }
+  .subfield { margin: -3px 0 11px 53px; }
+  .tag { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
-  fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 0; }
-  legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
-  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
-  .row label { width: 52px; color: var(--muted); font-size: 13px; }
   select, input[type=number] {
-    flex: 1; background: #0e1116; color: var(--ink); border: 1px solid var(--line);
-    border-radius: 8px; padding: 7px 8px; font: inherit;
+    height: 38px; background: var(--inset); color: var(--ink); border: 1px solid var(--line);
+    border-radius: var(--r-sm); padding: 0 11px; font: inherit; min-width: 0; transition: border-color .12s;
   }
-  input[type=number] { width: 64px; flex: 0 0 64px; }
-  button.action {
-    background: var(--accent); color: #06121f; border: none; border-radius: 9px;
-    padding: 10px; font: inherit; font-weight: 600; cursor: pointer;
+  select:hover, input[type=number]:hover { border-color: var(--line-2); }
+  select:focus, input[type=number]:focus { outline: none; border-color: var(--primary); }
+  select {
+    flex: 1; appearance: none; -webkit-appearance: none; cursor: pointer;
+    padding-right: 30px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right 11px center;
   }
-  button.action:hover { filter: brightness(1.08); }
-  button.ghost {
-    background: transparent; color: var(--ink); border: 1px solid var(--line);
-    border-radius: 9px; padding: 8px 10px; font: inherit; cursor: pointer; flex: 1;
-  }
-  button:disabled { opacity: .4; cursor: not-allowed; }
-  .watch { display: flex; gap: 8px; }
-  .speed { display: flex; align-items: center; gap: 8px; }
-  .speed input { flex: 1; }
-  .hint { color: var(--muted); font-size: 12px; }
-  a { color: var(--accent); }
-  .ckpt-row label { width: 52px; }
+  input.num { flex: 0 0 60px; width: 60px; text-align: center; padding: 0 8px; }
 
-  /* ---- arena spectate (parallel N-game match, watch any one live) ---- */
-  .arena-live {
-    width: min(96vw, 1000px); margin-top: 22px; background: var(--panel);
-    border: 1px solid var(--line); border-radius: 12px; padding: 16px;
-  }
-  .arena-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .arena-title { font-weight: 600; }
-  .arena-state {
-    font-size: 12px; padding: 3px 9px; border-radius: 999px;
-    border: 1px solid var(--line); color: var(--muted); text-transform: capitalize;
-  }
-  .arena-state.running { color: #7fd18b; border-color: #2f6b3a; }
-  .arena-state.paused  { color: var(--legal); border-color: #7a5f14; }
-  .arena-state.done    { color: var(--accent); border-color: #245a86; }
-  .arena-state.stopped, .arena-state.error { color: #ff8a8a; border-color: #7a2a2a; }
-  .arena-ctrls { margin-left: auto; display: flex; gap: 8px; }
-  .arena-ctrls button { flex: 0 0 auto; padding: 6px 14px; }
-  .arena-bar { height: 6px; background: #0e1116; border-radius: 999px; margin: 12px 0 8px; overflow: hidden; }
-  .arena-bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
-  .arena-tally { font-size: 14px; margin-bottom: 12px; }
-  .arena-body { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
-  .arena-focus { flex: 0 0 auto; }
-  .focus-label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-  .focus-board { width: min(72vw, 300px); }
-  .arena-grid { display: flex; flex-wrap: wrap; gap: 10px; flex: 1 1 320px; align-content: flex-start; }
-  .arena-tile { cursor: pointer; border-radius: 6px; padding: 4px; border: 2px solid transparent; }
-  .arena-tile:hover { border-color: var(--line); }
-  .arena-tile.focused { border-color: var(--accent); }
-  .arena-tile.won  { background: rgba(60,160,90,.15); }
-  .arena-tile.lost { background: rgba(200,70,70,.15); }
-  .arena-tile.drew { background: rgba(150,150,150,.12); }
-  .arena-tile .mini-board { width: 92px; }
-  .tile-cap { font-size: 11px; color: var(--muted); text-align: center; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  input[type=range] { -webkit-appearance: none; appearance: none; flex: 1; height: 6px; border-radius: 999px; background: var(--line); accent-color: var(--primary); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
 
-  .mini-board {
-    display: grid; grid-template-columns: repeat(8,1fr); grid-template-rows: repeat(8,1fr);
-    gap: 1px; aspect-ratio: 1; background: var(--board-line); padding: 3px; border-radius: 5px;
+  .btn {
+    height: 40px; padding: 0 16px; border-radius: var(--r-sm); border: 1px solid var(--line);
+    background: var(--card-2); color: var(--ink); font: inherit; font-weight: 600; cursor: pointer;
+    transition: background .12s, border-color .12s, filter .12s;
   }
-  .mini-cell {
-    background: var(--board); border-radius: 1px; display: grid; place-items: center;
-    position: relative; min-width: 0; min-height: 0;
-  }
-  .mini-cell.last { box-shadow: inset 0 0 0 2px var(--legal); }
-  .mini-cell .d { width: 74%; aspect-ratio: 1; border-radius: 50%; }
-  .mini-cell .d.black { background: radial-gradient(circle at 35% 30%, #444, #050505); }
-  .mini-cell .d.white { background: radial-gradient(circle at 35% 30%, #fff, #c8ccd2); }
+  .btn:hover { background: #232935; border-color: var(--line-2); }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+  .btn.primary { background: linear-gradient(180deg, var(--primary), var(--primary-2)); border-color: transparent; color: var(--on-primary); box-shadow: 0 6px 16px rgba(63,116,245,.28); }
+  .btn.primary:hover { filter: brightness(1.07); background: linear-gradient(180deg, var(--primary), var(--primary-2)); }
+  .btn.block { width: 100%; }
+  .btn.sm { height: 33px; padding: 0 14px; font-size: 13.5px; }
+  .btn-row { display: flex; gap: 9px; margin-top: 12px; }
+  .btn-row .btn { flex: 1; }
+  .btn.mt { margin-top: 13px; }
+
+  .note { margin-top: 11px; font-size: 12.5px; color: var(--muted); min-height: 0; }
+  .hint { margin: 4px 2px 0; font-size: 12px; line-height: 1.6; color: var(--faint); }
+
+  /* ---- arena spectate ---- */
+  .arena { margin-top: 26px; }
+  .arena-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .arena-title { font-size: 15px; font-weight: 600; margin: 0; }
+  .arena-title .vs { color: var(--faint); font-weight: 400; margin: 0 3px; }
+  .pill { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.running { color: #86e4a6; border-color: #2f7a48; background: rgba(70,201,111,.09); }
+  .pill.paused { color: var(--warn); border-color: #7a611a; background: rgba(243,192,78,.09); }
+  .pill.done { color: #8fb8ff; border-color: #2c5a86; background: rgba(91,140,255,.1); }
+  .pill.stopped, .pill.error { color: #ff9c9c; border-color: #7a2f2f; background: rgba(242,106,106,.09); }
+  .arena-actions { margin-left: auto; display: flex; gap: 8px; }
+  .progress { height: 7px; border-radius: 999px; background: var(--inset); border: 1px solid var(--line); overflow: hidden; margin: 14px 0 0; }
+  .progress > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--primary-2), var(--primary)); transition: width .3s; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 13px; }
+  .chip { font-size: 12.5px; padding: 5px 11px; border-radius: 8px; background: var(--inset); border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  .chip.good { color: var(--good); } .chip.bad { color: var(--bad); }
+  .chip.strong { font-weight: 700; } .chip.ghost { color: var(--muted); }
+
+  .arena-main { display: grid; grid-template-columns: auto 1fr; gap: 24px; margin-top: 18px; align-items: start; }
+  @media (max-width: 680px) { .arena-main { grid-template-columns: 1fr; } }
+  .focus-cap { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  .focus-cap b { color: var(--ink); }
+  .tiles { display: flex; flex-wrap: wrap; gap: 12px; align-content: flex-start; }
+  .tile { width: 104px; cursor: pointer; padding: 6px; border-radius: 10px; border: 1px solid transparent; background: var(--card-2); transition: border-color .12s; }
+  .tile:hover { border-color: var(--line-2); }
+  .tile.focused { border-color: var(--primary); }
+  .tile.won .mini-board  { box-shadow: 0 0 0 2px rgba(70,201,111,.55); }
+  .tile.lost .mini-board { box-shadow: 0 0 0 2px rgba(242,106,106,.55); }
+  .tile.drew .mini-board { box-shadow: 0 0 0 2px rgba(150,155,166,.45); }
+  .cap { margin-top: 6px; font-size: 11px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+  .cap .out { font-weight: 700; }
+  .tile.won .cap .out  { color: var(--good); }
+  .tile.lost .cap .out { color: var(--bad); }
+
+  .mini-board { display: grid; grid-template-columns: repeat(8,1fr); grid-template-rows: repeat(8,1fr); gap: 1px; aspect-ratio: 1; background: #0e5c34; padding: 3px; border-radius: 6px; }
+  .mini-board.big { width: min(78vw, 290px); border-radius: 9px; padding: 5px; gap: 2px; }
+  .mcell { background: #1a7a46; border-radius: 1px; display: grid; place-items: center; min-width: 0; min-height: 0; }
+  .mcell.last { box-shadow: inset 0 0 0 2px rgba(255,209,102,.9); }
+  .mcell .d { width: 76%; aspect-ratio: 1; border-radius: 50%; }
+  .mcell .d.black { background: radial-gradient(circle at 34% 28%, #505050, #0a0a0a 78%); }
+  .mcell .d.white { background: radial-gradient(circle at 34% 28%, #ffffff, #ccd1d8 80%); }
 </style>
 </head>
 <body>
-  <h1>Othello</h1>
-  <div class="sub">Play a bot, or watch two bots. AZ trained net · Minimax at any depth · Edax (if installed) · random · greedy.
-    &nbsp;·&nbsp; <a href="/dashboard">📊 Training dashboard</a></div>
-
-  <div class="layout">
-    <div class="board" id="board" role="grid" aria-label="Othello board, 8 by 8"></div>
-
-    <div class="panel">
-      <div class="scores">
-        <div class="score" id="scoreBlack"><div class="n" id="nBlack">2</div><div class="who"><span class="dot black"></span>Black</div></div>
-        <div class="score" id="scoreWhite"><div class="n" id="nWhite">2</div><div class="who"><span class="dot white"></span>White</div></div>
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark"></span>
+      <div>
+        <h1>Othello</h1>
+        <p class="tagline">Play the AlphaZero net, Minimax, or Edax — or watch bots battle.</p>
       </div>
+    </div>
+    <a class="link-btn" href="/dashboard">📊 Training dashboard</a>
+  </header>
 
-      <div class="status" id="status" role="status" aria-live="polite">Choose players and press New Game.</div>
+  <main class="app">
+    <!-- board column -->
+    <section>
+      <div class="scoreboard">
+        <div class="team" id="teamBlack"><span class="disc-ico black"></span><span class="team-name">Black</span><span class="count" id="nBlack">2</span></div>
+        <div class="team" id="teamWhite"><span class="disc-ico white"></span><span class="team-name">White</span><span class="count" id="nWhite">2</span></div>
+      </div>
+      <div class="board" id="board" role="grid" aria-label="Othello board, 8 by 8"></div>
+      <div class="status" id="status" role="status" aria-live="polite">Choose players, then press New Game.</div>
+    </section>
 
-      <fieldset>
-        <legend>Players</legend>
-        <div class="row">
+    <!-- controls -->
+    <aside class="side">
+      <div class="card">
+        <h2>Players</h2>
+        <div class="field">
           <label for="blackType">Black</label>
-          <select id="blackType" aria-label="Black player type"></select>
-          <input type="number" id="blackParam" min="1" max="30" value="1" aria-label="Black difficulty">
+          <div class="controls">
+            <select id="blackType" aria-label="Black player type"></select>
+            <input type="number" id="blackParam" class="num" min="1" max="30" value="1" aria-label="Black difficulty">
+          </div>
         </div>
-        <div class="row ckpt-row" id="blackCkptRow" hidden>
-          <label for="blackCkpt">ckpt</label>
+        <div class="subfield" id="blackCkptRow" hidden>
           <select id="blackCkpt" aria-label="Black AZ checkpoint"></select>
         </div>
-        <div class="row">
+        <div class="field">
           <label for="whiteType">White</label>
-          <select id="whiteType" aria-label="White player type"></select>
-          <input type="number" id="whiteParam" min="1" max="30" value="4" aria-label="White difficulty">
+          <div class="controls">
+            <select id="whiteType" aria-label="White player type"></select>
+            <input type="number" id="whiteParam" class="num" min="1" max="30" value="4" aria-label="White difficulty">
+          </div>
         </div>
-        <div class="row ckpt-row" id="whiteCkptRow" hidden>
-          <label for="whiteCkpt">ckpt</label>
+        <div class="subfield" id="whiteCkptRow" hidden>
           <select id="whiteCkpt" aria-label="White AZ checkpoint"></select>
         </div>
-      </fieldset>
+        <button class="btn primary block mt" id="newBtn">New Game</button>
+      </div>
 
-      <button class="action" id="newBtn">New Game</button>
+      <div class="card">
+        <h2>Playback <span class="note">for bot turns</span></h2>
+        <div class="field">
+          <label for="speed">Speed</label>
+          <div class="controls"><input type="range" id="speed" min="0" max="1500" step="100" value="500" aria-label="Delay between bot moves"></div>
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="pauseBtn">Pause</button>
+          <button class="btn" id="stepBtn">Step</button>
+        </div>
+      </div>
 
-      <fieldset>
-        <legend>Watch controls (for bot turns)</legend>
-        <div class="speed">
-          <span class="hint">Speed</span>
-          <input type="range" id="speed" min="0" max="1500" step="100" value="500" aria-label="Delay between bot moves">
+      <div class="card" id="arenaBox" hidden>
+        <h2>Arena <span class="note">AZ vs opponent · parallel</span></h2>
+        <div class="field">
+          <label for="arenaChampCkpt">AZ</label>
+          <div class="controls">
+            <select id="arenaChampCkpt" aria-label="AZ champion checkpoint"></select>
+            <input type="number" id="arenaSims" class="num" min="10" max="1000" value="80" title="MCTS sims/move — higher = stronger, slower" aria-label="AZ sims per move">
+          </div>
         </div>
-        <div class="watch" style="margin-top:8px">
-          <button class="ghost" id="pauseBtn">Pause</button>
-          <button class="ghost" id="stepBtn">Step</button>
-        </div>
-      </fieldset>
-
-      <fieldset id="arenaBox" hidden>
-        <legend>Arena — AZ vs opponent · N games in parallel, watch live</legend>
-        <div class="row">
-          <label for="arenaChampCkpt" title="Which AZ checkpoint plays as the champion">AZ</label>
-          <select id="arenaChampCkpt" aria-label="AZ champion checkpoint"></select>
-          <input type="number" id="arenaSims" min="10" max="1000" value="80" title="MCTS simulations per move — higher = stronger, slower" aria-label="AZ sims per move">
-        </div>
-        <div class="row">
+        <div class="field">
           <label for="arenaOpp">Opp</label>
-          <select id="arenaOpp" aria-label="Arena opponent"></select>
-          <input type="number" id="arenaParam" value="2" aria-label="Opponent difficulty">
+          <div class="controls">
+            <select id="arenaOpp" aria-label="Arena opponent"></select>
+            <input type="number" id="arenaParam" class="num" value="2" aria-label="Opponent difficulty">
+          </div>
         </div>
-        <div class="row ckpt-row" id="arenaOppCkptRow" hidden>
-          <label for="arenaOppCkpt">Opp ckpt</label>
+        <div class="subfield" id="arenaOppCkptRow" hidden>
           <select id="arenaOppCkpt" aria-label="Opponent AZ checkpoint"></select>
         </div>
-        <div class="row">
-          <label for="arenaGames">Games</label>
-          <input type="number" id="arenaGames" min="1" max="200" value="20" aria-label="Number of games">
-          <label for="arenaWorkers" style="width:auto" title="How many games play at once">Parallel</label>
-          <input type="number" id="arenaWorkers" min="1" max="8" value="6" aria-label="Parallel games">
+        <div class="field">
+          <label>Match</label>
+          <div class="controls">
+            <span class="tag">Games</span>
+            <input type="number" id="arenaGames" class="num" min="1" max="200" value="20" aria-label="Number of games">
+            <span class="tag">Parallel</span>
+            <input type="number" id="arenaWorkers" class="num" min="1" max="8" value="6" aria-label="Parallel games">
+          </div>
         </div>
-        <button class="ghost" id="arenaBtn" style="width:100%;margin-top:2px">Run match</button>
-        <div class="hint" id="arenaOut" style="margin-top:8px" aria-live="polite"></div>
-      </fieldset>
+        <button class="btn block mt" id="arenaBtn">Run match</button>
+        <div class="note" id="arenaOut" aria-live="polite"></div>
+      </div>
 
-      <div class="hint" id="edaxHint"></div>
-    </div>
-  </div>
+      <p class="hint" id="edaxHint"></p>
+    </aside>
+  </main>
 
-  <div class="arena-live" id="arenaLive" hidden>
-    <div class="arena-head">
-      <div class="arena-title">Arena — <span id="alChampion">AZ</span> &nbsp;vs&nbsp; <span id="alOpp">opponent</span></div>
-      <div class="arena-state running" id="alState">running</div>
-      <div class="arena-ctrls">
-        <button class="ghost" id="alPause">Pause</button>
-        <button class="ghost" id="alStop">Stop</button>
+  <!-- arena live spectate (full width) -->
+  <section class="card arena" id="arenaLive" hidden>
+    <div class="arena-top">
+      <h2 class="arena-title">Arena — <span id="alChampion">AZ</span><span class="vs">vs</span><span id="alOpp">opponent</span></h2>
+      <span class="pill running" id="alState">running</span>
+      <div class="arena-actions">
+        <button class="btn sm" id="alPause">Pause</button>
+        <button class="btn sm" id="alStop">Stop</button>
       </div>
     </div>
-    <div class="arena-bar"><div class="arena-bar-fill" id="alBar"></div></div>
-    <div class="arena-tally" id="alTally"></div>
-    <div class="arena-body">
-      <div class="arena-focus">
-        <div class="focus-label" id="alFocusLabel">Game 1</div>
-        <div class="mini-board focus-board" id="alFocusBoard"></div>
+    <div class="progress"><i id="alBar"></i></div>
+    <div class="chips" id="alTally"></div>
+    <div class="arena-main">
+      <div class="focus">
+        <div class="focus-cap" id="alFocusLabel">Game 1</div>
+        <div class="mini-board big" id="alFocusBoard"></div>
       </div>
-      <div class="arena-grid" id="alGrid"></div>
+      <div class="tiles" id="alGrid"></div>
     </div>
-  </div>
+  </section>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
 const BLACK = 1, WHITE = -1, PASS = 64;
 let gameId = null, state = null, paused = false, busy = false, config = {};
 
-// ---- build player selects ----
-function azLabel() {
-  return config.az_iteration != null ? `AZ net (iter ${config.az_iteration})` : "AZ net (trained)";
-}
+// ---------- player + checkpoint selects ----------
+function azLabel() { return config.az_iteration != null ? `AZ net · iter ${config.az_iteration}` : "AZ net"; }
 function playerOptions() {
-  const opts = [["human","Human"],["minimax","Minimax"],["random","Random"],["greedy","Greedy"]];
-  if (config.az_available) opts.splice(1, 0, ["az", azLabel()]);   // the trained net, right after Human
-  if (config.edax_available) opts.splice(config.az_available ? 3 : 2, 0, ["edax","Edax"]);
+  const opts = [["human", "Human"], ["minimax", "Minimax"], ["random", "Random"], ["greedy", "Greedy"]];
+  if (config.az_available) opts.splice(1, 0, ["az", azLabel()]);
+  if (config.edax_available) opts.splice(config.az_available ? 3 : 2, 0, ["edax", "Edax"]);
   return opts;
 }
 function fillSelect(sel, chosen) {
@@ -271,19 +337,29 @@ function fillSelect(sel, chosen) {
     sel.appendChild(o);
   }
 }
-function needsParam(type) { return type === "minimax" || type === "edax" || type === "az"; }
+function ckptOptions() {
+  return (config.checkpoints || []).map(c =>
+    [c.label, c.is_latest ? `latest · iter ${c.iteration ?? "?"}` : `iter ${c.iteration}`]);
+}
+function fillCkptSelect(sel) {
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const [val, label] of ckptOptions()) {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label; sel.appendChild(o);
+  }
+}
+function needsParam(t) { return t === "minimax" || t === "edax" || t === "az"; }
 function syncParam(typeSel, paramInput, ckptRow) {
   const t = typeSel.value;
-  paramInput.style.display = needsParam(t) ? "" : "none";
+  paramInput.hidden = !needsParam(t);
   if (ckptRow) ckptRow.hidden = (t !== "az");
-  paramInput.title = t === "az" ? "MCTS simulations per move — higher = stronger but slower"
-    : t === "minimax" ? "search depth" : t === "edax" ? "Edax level" : "";
-  if (t === "minimax") { paramInput.min = 1; paramInput.max = config.max_minimax_depth || 8; if (+paramInput.value > paramInput.max) paramInput.value = 4; }
-  if (t === "edax") { paramInput.min = 0; paramInput.max = config.max_edax_level || 30; }
-  if (t === "az") {
+  if (t === "minimax") { paramInput.min = 1; paramInput.max = config.max_minimax_depth || 8; paramInput.title = "search depth"; if (+paramInput.value > paramInput.max || +paramInput.value < 1) paramInput.value = 4; }
+  else if (t === "edax") { paramInput.min = 0; paramInput.max = config.max_edax_level || 30; paramInput.title = "Edax level"; if (+paramInput.value > paramInput.max) paramInput.value = 6; }
+  else if (t === "az") {
     paramInput.min = config.min_az_sims || 10; paramInput.max = config.max_az_sims || 1000;
-    if (+paramInput.value < paramInput.min || +paramInput.value > paramInput.max)
-      paramInput.value = config.default_az_sims || 120;
+    paramInput.title = "MCTS sims/move — higher = stronger, slower";
+    if (+paramInput.value < paramInput.min || +paramInput.value > paramInput.max) paramInput.value = config.default_az_sims || 120;
   }
 }
 function specOf(typeSel, paramInput, ckptSel) {
@@ -294,41 +370,29 @@ function specOf(typeSel, paramInput, ckptSel) {
   return t;
 }
 
-// ---- checkpoint picker (load a specific past agent, not just latest) ----
-function ckptOptions() {
-  return (config.checkpoints || []).map(c =>
-    [c.label, c.is_latest ? `latest (iter ${c.iteration ?? "?"})` : `iter ${c.iteration}`]);
-}
-function fillCkptSelect(sel) {
-  if (!sel) return;
-  sel.innerHTML = "";
-  for (const [val, label] of ckptOptions()) {
-    const o = document.createElement("option");
-    o.value = val; o.textContent = label; sel.appendChild(o);
-  }
-}
-
-// ---- board ----
+// ---------- board ----------
 const cells = [];
 function buildBoard() {
-  const b = $("board");
+  const b = $("board"); b.innerHTML = ""; cells.length = 0;
   for (let i = 0; i < 64; i++) {
     const btn = document.createElement("button");
-    btn.className = "cell"; btn.setAttribute("role", "gridcell");
-    btn.dataset.i = i;
+    btn.className = "cell"; btn.type = "button"; btn.setAttribute("role", "gridcell"); btn.dataset.i = i;
     btn.addEventListener("click", () => onCell(i));
     b.appendChild(btn); cells.push(btn);
   }
 }
-const rc = i => `row ${Math.floor(i/8)+1}, column ${i%8+1}`;
-
+const rc = i => `row ${Math.floor(i / 8) + 1}, column ${i % 8 + 1}`;
+function initialBoard() { const b = Array(64).fill(0); b[27] = WHITE; b[36] = WHITE; b[28] = BLACK; b[35] = BLACK; return b; }
+function previewState() {
+  return { board: initialBoard(), player: BLACK, current_name: "Black", legal: [], must_pass: false,
+           done: false, result: null, black_count: 2, white_count: 2, black_spec: "", white_spec: "",
+           last_move: null, current_is_human: false };
+}
 function render() {
-  const s = state;
-  const legal = new Set(s.current_is_human ? s.legal : []);
+  const s = state, legal = new Set(s.current_is_human ? s.legal : []);
   for (let i = 0; i < 64; i++) {
     const c = cells[i], v = s.board[i];
-    c.className = "cell";
-    c.innerHTML = "";
+    c.className = "cell"; c.innerHTML = "";
     let label = rc(i) + ", ";
     if (v === BLACK) { c.innerHTML = '<span class="disc black"></span>'; label += "black disc"; }
     else if (v === WHITE) { c.innerHTML = '<span class="disc white"></span>'; label += "white disc"; }
@@ -340,28 +404,31 @@ function render() {
   }
   $("nBlack").textContent = s.black_count;
   $("nWhite").textContent = s.white_count;
-  $("scoreBlack").classList.toggle("turn", !s.done && s.player === BLACK);
-  $("scoreWhite").classList.toggle("turn", !s.done && s.player === WHITE);
-
-  const st = $("status");
-  st.classList.remove("win");
+  $("teamBlack").classList.toggle("active", !!gameId && !s.done && s.player === BLACK);
+  $("teamWhite").classList.toggle("active", !!gameId && !s.done && s.player === WHITE);
+  renderStatus();
+}
+function renderStatus() {
+  const s = state, st = $("status"); st.className = "status";
   if (s.done) {
     st.classList.add("win");
-    st.textContent = s.result === 0 ? `Draw — ${s.black_count} : ${s.white_count}`
-      : `${s.result === BLACK ? "Black" : "White"} wins — ${s.black_count} : ${s.white_count}`;
-  } else {
-    const who = s.current_name, spec = s.player === BLACK ? s.black_spec : s.white_spec;
-    st.textContent = `${who} to move (${spec})` + (s.must_pass ? " — no legal move, must pass" : s.current_is_human ? " — your turn" : " — thinking…");
+    st.innerHTML = s.result === 0 ? `Draw · ${s.black_count}–${s.white_count}`
+      : `<b>${s.result === BLACK ? "Black" : "White"} wins</b> · ${s.black_count}–${s.white_count}`;
+    return;
   }
+  if (!gameId) { st.textContent = "Choose players, then press New Game."; return; }
+  const who = s.current_name, spec = s.player === BLACK ? s.black_spec : s.white_spec;
+  if (s.must_pass) { st.innerHTML = `<b>${who}</b> must pass — no legal move`; return; }
+  if (s.current_is_human) { st.innerHTML = `<b>${who}</b> to move — your turn`; return; }
+  st.innerHTML = `<span class="thinking"><i></i><i></i><i></i></span><b>${who}</b> thinking… <span class="muted">(${spec})</span>`;
 }
 
-// ---- flow ----
+// ---------- game flow ----------
 async function api(path, body) {
-  const r = await fetch(path, { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
-  if (!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail || "error"); }
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) { const e = await r.json().catch(() => ({ detail: r.statusText })); throw new Error(e.detail || "error"); }
   return r.json();
 }
-
 async function newGame() {
   try {
     const res = await api("/api/new", {
@@ -371,51 +438,32 @@ async function newGame() {
     render(); tick();
   } catch (e) { $("status").textContent = "Could not start: " + e.message; }
 }
-
 function tick() {
   if (!state || state.done) return;
-  if (state.current_is_human) {
-    if (state.must_pass) setTimeout(() => doMove(PASS), 700);   // nothing to click; pass for the user
-    return;                                                     // else wait for a click
-  }
-  if (!paused) setTimeout(botMove, +$("speed").value);          // bot turn: auto-advance unless paused
+  if (state.current_is_human) { if (state.must_pass) setTimeout(() => doMove(PASS), 650); return; }
+  if (!paused) setTimeout(botMove, +$("speed").value);
 }
-
 async function doMove(move) {
   if (busy || !state || state.done) return;
   busy = true;
   try { const res = await api("/api/move", { game_id: gameId, move }); state = res.state; render(); tick(); }
-  catch (e) { $("status").textContent = e.message; }
-  finally { busy = false; }
+  catch (e) { $("status").textContent = e.message; } finally { busy = false; }
 }
-
 async function botMove() {
   if (busy || !state || state.done || state.current_is_human) return;
   busy = true;
   try { const res = await api("/api/bot_move", { game_id: gameId }); state = res.state; render(); tick(); }
-  catch (e) { $("status").textContent = e.message; }
-  finally { busy = false; }
+  catch (e) { $("status").textContent = e.message; } finally { busy = false; }
 }
+function onCell(i) { if (state && state.current_is_human && !state.done) doMove(i); }
 
-function onCell(i) {
-  if (state && state.current_is_human && !state.done) doMove(i);
-}
-
-// ---- controls ----
 $("newBtn").addEventListener("click", newGame);
-$("pauseBtn").addEventListener("click", () => {
-  paused = !paused; $("pauseBtn").textContent = paused ? "Resume" : "Pause";
-  if (!paused) tick();
-});
-$("stepBtn").addEventListener("click", () => { if (state && !state.current_is_human) botMove(); });
-for (const side of ["black","white"]) {
-  $(side+"Type").addEventListener("change", () => syncParam($(side+"Type"), $(side+"Param"), $(side+"CkptRow")));
-}
+$("pauseBtn").addEventListener("click", () => { paused = !paused; $("pauseBtn").textContent = paused ? "Resume" : "Pause"; if (!paused) tick(); });
+$("stepBtn").addEventListener("click", () => { if (state && !state.current_is_human && !state.done) botMove(); });
+for (const side of ["black", "white"]) $(side + "Type").addEventListener("change", () => syncParam($(side + "Type"), $(side + "Param"), $(side + "CkptRow")));
 
-// ---- arena: N games in PARALLEL, live tally + spectate any one, pause/stop ----
-function arenaOppOptions() {                       // any bot (incl. an AZ checkpoint) — no human
-  return playerOptions().filter(([v]) => v !== "human");
-}
+// ---------- arena ----------
+function arenaOppOptions() { return playerOptions().filter(([v]) => v !== "human"); }
 function fillArenaOpp() {
   const sel = $("arenaOpp"); sel.innerHTML = "";
   for (const [val, label] of arenaOppOptions()) {
@@ -427,149 +475,124 @@ function fillArenaOpp() {
 }
 function syncArenaParam() {
   const t = $("arenaOpp").value, p = $("arenaParam");
-  const need = t === "minimax" || t === "edax" || t === "az";
-  p.style.display = need ? "" : "none";
-  $("arenaOppCkptRow").hidden = (t !== "az");     // opponent AZ picks its own checkpoint
+  p.hidden = !(t === "minimax" || t === "edax" || t === "az");
+  $("arenaOppCkptRow").hidden = (t !== "az");
   if (t === "minimax") { p.min = 1; p.max = config.max_minimax_depth || 8; if (+p.value > p.max || +p.value < 1) p.value = 2; }
-  if (t === "edax") { p.min = 0; p.max = config.max_edax_level || 30; if (+p.value > p.max) p.value = 6; }
-  if (t === "az") { p.min = config.min_az_sims || 10; p.max = config.max_az_sims || 1000;
-    if (+p.value < 10 || +p.value > 1000) p.value = 80; }
+  else if (t === "edax") { p.min = 0; p.max = config.max_edax_level || 30; if (+p.value > p.max) p.value = 6; }
+  else if (t === "az") { p.min = config.min_az_sims || 10; p.max = config.max_az_sims || 1000; if (+p.value < 10 || +p.value > 1000) p.value = 80; }
 }
 function arenaOppSpec() {
   const t = $("arenaOpp").value, p = $("arenaParam").value;
   if (t === "minimax") return "minimax:" + p;
   if (t === "edax") return "edax:" + p;
   if (t === "az") return "az:" + (p || 80) + "@" + $("arenaOppCkpt").value;
-  return t;                                        // random / greedy
+  return t;
 }
-
-// mini-board rendering (reused by focus board + every game tile)
 function buildMini(container) {
-  container.innerHTML = ""; const cells = [];
-  for (let i = 0; i < 64; i++) { const c = document.createElement("div"); c.className = "mini-cell"; container.appendChild(c); cells.push(c); }
-  return cells;
+  container.innerHTML = ""; const cs = [];
+  for (let i = 0; i < 64; i++) { const c = document.createElement("div"); c.className = "mcell"; container.appendChild(c); cs.push(c); }
+  return cs;
 }
-function paintCells(cells, board, lastMove) {
+function paintCells(cs, board, last) {
   for (let i = 0; i < 64; i++) {
     const v = board[i];
-    cells[i].className = "mini-cell" + (i === lastMove ? " last" : "");
-    cells[i].innerHTML = v === BLACK ? '<span class="d black"></span>' : v === WHITE ? '<span class="d white"></span>' : "";
+    cs[i].className = "mcell" + (i === last ? " last" : "");
+    cs[i].innerHTML = v === BLACK ? '<span class="d black"></span>' : v === WHITE ? '<span class="d white"></span>' : "";
   }
 }
-
-let arenaJob = null, arenaTimer = null, arenaFocus = 0;
-let arenaTiles = [], arenaFocusCells = [], arenaBuilt = false, arenaGames = [];
-
+let arenaJob = null, arenaTimer = null, arenaFocus = 0, arenaTiles = [], arenaFocusCells = [], arenaBuilt = false, arenaGames = [];
 async function startArena() {
   stopArenaPolling();
   $("arenaBtn").disabled = true; $("arenaOut").textContent = "Starting…";
   try {
     const job = await api("/api/arena", {
-      opponent: arenaOppSpec(),
-      games: +$("arenaGames").value,
-      az_sims: +$("arenaSims").value,
-      az_ckpt: $("arenaChampCkpt").value,
-      workers: +($("arenaWorkers").value || 6),
-    });
+      opponent: arenaOppSpec(), games: +$("arenaGames").value, az_sims: +$("arenaSims").value,
+      az_ckpt: $("arenaChampCkpt").value, workers: +($("arenaWorkers").value || 6) });
     arenaJob = job.job_id; arenaFocus = 0; arenaBuilt = false; arenaTiles = []; arenaGames = [];
     $("arenaOut").textContent = "";
-    $("arenaLive").hidden = false;
-    $("arenaLive").scrollIntoView({ behavior: "smooth", block: "start" });
+    $("arenaLive").hidden = false; $("arenaLive").scrollIntoView({ behavior: "smooth", block: "start" });
     renderArena(job);
     arenaTimer = setInterval(pollArena, 500);
   } catch (e) { $("arenaBtn").disabled = false; $("arenaOut").textContent = "Could not start: " + e.message; }
 }
 function stopArenaPolling() { if (arenaTimer) clearInterval(arenaTimer); arenaTimer = null; $("arenaBtn").disabled = false; }
-
 async function pollArena() {
   if (!arenaJob) return;
   const r = await fetch("/api/arena/" + arenaJob);
   if (!r.ok) { stopArenaPolling(); $("arenaOut").textContent = "Arena job expired."; return; }
-  const j = await r.json();
-  renderArena(j);
+  const j = await r.json(); renderArena(j);
   if (j.done || j.error) stopArenaPolling();
 }
-
 function buildArenaTiles(n) {
   const grid = $("alGrid"); grid.innerHTML = ""; arenaTiles = [];
   for (let i = 0; i < n; i++) {
-    const tile = document.createElement("div"); tile.className = "arena-tile";
+    const tile = document.createElement("div"); tile.className = "tile";
     const bd = document.createElement("div"); bd.className = "mini-board";
-    const cells = buildMini(bd);
-    const cap = document.createElement("div"); cap.className = "tile-cap";
+    const cs = buildMini(bd);
+    const cap = document.createElement("div"); cap.className = "cap";
     tile.appendChild(bd); tile.appendChild(cap);
     tile.addEventListener("click", () => { arenaFocus = i; updateFocus(); });
-    grid.appendChild(tile);
-    arenaTiles.push({ cells, cap, tile });
+    grid.appendChild(tile); arenaTiles.push({ cells: cs, cap, tile });
   }
-  arenaFocusCells = buildMini($("alFocusBoard"));
-  arenaBuilt = true;
+  arenaFocusCells = buildMini($("alFocusBoard")); arenaBuilt = true;
 }
-
 function renderArena(j) {
   $("alChampion").textContent = j.az_label || ("AZ " + (j.az_ckpt || "latest"));
   $("alOpp").textContent = j.opp_label || j.opponent;
   const st = j.error ? "error" : j.done ? (j.cancel ? "stopped" : "done") : (j.paused ? "paused" : "running");
-  $("alState").textContent = st; $("alState").className = "arena-state " + st;
+  $("alState").textContent = st; $("alState").className = "pill " + st;
   $("alPause").textContent = j.paused ? "Resume" : "Pause";
   $("alPause").disabled = !!j.done; $("alStop").disabled = !!j.done;
-
-  const played = j.played || 0, total = j.total || 1;
+  const played = j.played || 0, total = j.total || 1, wr = ((j.win_rate || 0) * 100).toFixed(0);
   $("alBar").style.width = (100 * played / total).toFixed(1) + "%";
-  const wr = ((j.win_rate || 0) * 100).toFixed(0);
-  $("alTally").innerHTML = j.error ? ("Error: " + j.error)
-    : `<b>${j.wins}W&nbsp; ${j.losses}L&nbsp; ${j.draws}D</b> &nbsp;·&nbsp; win rate <b>${wr}%</b> &nbsp;·&nbsp; ${played}/${total} games finished`;
-
+  $("alTally").innerHTML = j.error ? `<span class="chip bad">Error: ${j.error}</span>`
+    : `<span class="chip good">${j.wins} W</span><span class="chip bad">${j.losses} L</span>`
+    + `<span class="chip">${j.draws} D</span><span class="chip strong">win rate ${wr}%</span>`
+    + `<span class="chip ghost">${played}/${total} games</span>`;
   arenaGames = j.games || [];
   if (!arenaBuilt && arenaGames.length) buildArenaTiles(arenaGames.length);
   for (const g of arenaGames) updateTile(g);
   updateFocus();
 }
-
 function updateTile(g) {
   const t = arenaTiles[g.idx]; if (!t) return;
   paintCells(t.cells, g.board, g.last_move);
   const azc = g.az_is === BLACK ? "B" : "W";
-  let cap = `#${g.idx + 1} · AZ=${azc}`;
-  if (g.done) cap += g.aborted ? " · —" : ` · ${g.az_outcome}`;
-  t.cap.textContent = cap;
+  t.cap.innerHTML = `#${g.idx + 1} · AZ=${azc}` + (g.done ? (g.aborted ? " · —" : ` · <span class="out">${g.az_outcome}</span>`) : "");
   t.tile.classList.toggle("won", g.az_outcome === "W");
   t.tile.classList.toggle("lost", g.az_outcome === "L");
   t.tile.classList.toggle("drew", g.az_outcome === "D");
   t.tile.classList.toggle("focused", g.idx === arenaFocus);
 }
-
 function updateFocus() {
   if (!arenaFocusCells.length) return;
   const g = arenaGames[arenaFocus]; if (!g) return;
   paintCells(arenaFocusCells, g.board, g.last_move);
   const azc = g.az_is === BLACK ? "Black" : "White";
   const oc = g.done ? (g.aborted ? "aborted" : { W: "AZ won", L: "AZ lost", D: "draw" }[g.az_outcome]) : "in progress";
-  $("alFocusLabel").innerHTML = `Game ${g.idx + 1} — AZ plays <b>${azc}</b> &nbsp;·&nbsp; ${g.black_count}–${g.white_count} &nbsp;·&nbsp; ply ${g.ply} &nbsp;·&nbsp; ${oc}`;
+  $("alFocusLabel").innerHTML = `Game ${g.idx + 1} — AZ plays <b>${azc}</b> · ${g.black_count}–${g.white_count} · ply ${g.ply} · ${oc}`;
   arenaTiles.forEach((t, i) => t.tile.classList.toggle("focused", i === arenaFocus));
 }
-
 async function arenaControl(action) {
   if (!arenaJob) return;
   try { const j = await api("/api/arena/" + arenaJob + "/control", { action }); renderArena(j); }
   catch (e) { $("arenaOut").textContent = e.message; }
 }
 
-// ---- init ----
+// ---------- init ----------
 (async function init() {
-  buildBoard();
+  buildBoard(); state = previewState(); render();
   config = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
-  fillSelect($("blackType"), "human");
-  fillSelect($("whiteType"), "minimax");
+  fillSelect($("blackType"), "human"); fillSelect($("whiteType"), "minimax");
   for (const side of ["black", "white"]) fillCkptSelect($(side + "Ckpt"));
   syncParam($("blackType"), $("blackParam"), $("blackCkptRow"));
   syncParam($("whiteType"), $("whiteParam"), $("whiteCkptRow"));
+  render();
   if (config.az_available) {
     $("arenaBox").hidden = false;
     $("arenaSims").value = config.default_az_sims ? Math.min(80, config.default_az_sims) : 80;
     $("arenaWorkers").max = config.max_arena_workers || 8;
-    fillCkptSelect($("arenaChampCkpt"));
-    fillCkptSelect($("arenaOppCkpt"));
+    fillCkptSelect($("arenaChampCkpt")); fillCkptSelect($("arenaOppCkpt"));
     fillArenaOpp();
     $("arenaOpp").addEventListener("change", syncArenaParam);
     $("arenaBtn").addEventListener("click", startArena);
@@ -578,11 +601,11 @@ async function arenaControl(action) {
   }
   const hints = [];
   hints.push(config.az_available
-    ? `AZ net loaded (checkpoint iter ${config.az_iteration ?? "?"}) — pick "AZ net" for either side; the number is MCTS sims/move (higher = stronger, slower).`
-    : "No trained model yet — run training (python run/train_loop.py) to play the AZ net here.");
+    ? `AZ net loaded (iter ${config.az_iteration ?? "?"}). Pick “AZ net” for either side; the number is MCTS sims/move.`
+    : "No trained model yet — run training to play the AZ net here.");
   hints.push(config.edax_available
-    ? "Edax is installed — try White = Edax. Even level 1–2 is very strong."
-    : "Edax not installed (optional). See opponents/EDAX_SETUP.md to enable it.");
+    ? "Edax is installed — try White = Edax (even level 1–2 is very strong)."
+    : "Edax not installed (optional) — see opponents/EDAX_SETUP.md.");
   $("edaxHint").innerHTML = hints.join("<br>");
 })();
 </script>
