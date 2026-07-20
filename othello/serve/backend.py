@@ -393,6 +393,9 @@ def _pretty_label(spec):
         sims, ck = _parse_az_spec(s)
         if ck == "latest":
             return f"AZ latest·{sims}"
+        r = re.match(r"(.+)-iter0*(\d+)$", ck)      # "<run>-iter<NN>" -> include the run
+        if r:
+            return f"AZ {r.group(1)} iter{r.group(2)}·{sims}"
         m = re.search(r"iter0*(\d+)", ck)
         return (f"AZ iter{m.group(1)}" if m else f"AZ {ck}") + f"·{sims}"
     return spec
