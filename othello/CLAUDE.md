@@ -218,6 +218,29 @@ runnable artifact. See `README.md` for structure.
   before/after checkpoints on the **Edax L2/L3 + Minimax yardstick, 40+ games** (NEVER the loss). Expect a MODEST
   bump (a few %), maybe over 50% vs Edax L2 — not another 25→47 leap.
 
+- **PROFILE RESULT on a T4 (2026-07-21) — the "search is 87%" assumption is DEAD; the net forward is now 43%.**
+  Ran `--kaggle --iterations 2 --profile` (10x128 net, 96 games, 96 sims). Warm iter-2 self-play (70.4s) splits:
+  **net_fwd 43.3% (GPU forward — a C++/CPU search port CANNOT speed this up), net_prep 16.2% (encode + H<->D
+  transfer + legal-masks), tree_ops 37.2% (PUCT select/backup, NumPy CPU), per_move 0.7%, postproc 2.6%.** avg
+  net batch/call = 92, vCPUs = 4. **So CPU work (the C++ target) is only 57% → HARD CEILING ≈ 2.3x, realistic
+  ~1.7–2.2x** (the native×cores table). **Why the old 87%-search premise flipped:** it was true for the 5x64
+  net; the 10x128 net (chosen for STRENGTH) made the GPU forward ~43% of self-play, capping any search rewrite.
+  **DECISION (user, 2026-07-21): do NOT build the C++ port** — ~2x for a big CMake/LibTorch/parity build cost is
+  a weak trade (and it only speeds self-play; training is also GPU, untouched). Caveat: at the real `--games 200`
+  batch the CPU fraction is a bit higher (net_fwd is call-count-bound, tree_ops games-bound), so the ceiling is
+  likely ~2.5–3x there — re-profile at `--games 200` if C++ is ever reconsidered. **The measurement redirected
+  the effort to the net eval (43%) + net_prep (16%), which are attackable cheaply WITHOUT C++ → FP16 (below).**
+- **FP16 self-play inference ✅ (2026-07-21) — attacks the 43% the C++ port couldn't.** Opt-in `--fp16` /
+  `cfg.infer_fp16` runs the self-play net FORWARD in half precision on CUDA (the T4's tensor cores) via
+  `network.inference_autocast` (a no-op on CPU → CPU play stays bit-exact with the FP32 oracles, tests
+  unaffected). Only the conv/linear matmuls go FP16; **BatchNorm + the masked softmax stay FP32** (autocast
+  policy + an explicit `.float()` on logits/values right after the forward), so the accuracy hit is small.
+  Wired into the default array-ops path (`make_net_evaluator(..., fp16=...)`) and the single-position
+  `Evaluator`; eval/ladder deliberately stays FP32 for a clean strength read. FAST `test_fp16_flag_is_cpu_noop`
+  pins the CPU no-op. **STILL TO MEASURE (user runs next): the g/s gain (`--kaggle --iterations 2 --fp16
+  --profile`, watch net_fwd shrink) AND that strength holds vs Edax L2 (40+ games) — FP16 rounding is ~1e-3, so
+  confirm it doesn't dent play before baking `infer_fp16=True` into `Config.kaggle()`.** Next cheaper lever after
+  this: trim net_prep (redundant CPU legal-mask recompute + 4 H<->D transfers/call).
 - **Self-play PROFILER added ✅ (2026-07-21) — to price a native/C++ MCTS port BEFORE building it.**
   Opt-in `--profile` flag (`az/profiling.py` + guarded hooks in `mcts_batched.make_net_evaluator` and
   `selfplay._play_batch`; zero cost when off, parity tests untouched). Prints a per-iteration self-play

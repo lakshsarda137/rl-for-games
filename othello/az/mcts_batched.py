@@ -187,12 +187,16 @@ def run_batched(boards, players, sims, evaluate, cfg, rng=None, add_noise=True):
     return counts, root_value
 
 
-def make_net_evaluator(net, device="cpu"):
+def make_net_evaluator(net, device="cpu", fp16=False):
     """Production evaluator: `(boards[k,8,8], players[k]) -> (priors[k,65], values[k])`
-    in ONE forward pass, encoding via the batched engine."""
+    in ONE forward pass, encoding via the batched engine.
+
+    `fp16=True` runs the forward in half precision on CUDA (T4 tensor cores) to cut
+    the net-forward cost — the biggest single slice of self-play on the 10x128 net;
+    a no-op on CPU. See network.inference_autocast for the exact FP16 policy."""
     import torch
 
-    from network import masked_log_softmax
+    from network import inference_autocast, masked_log_softmax
     from profiling import PROF
 
     @torch.no_grad()
@@ -206,7 +210,9 @@ def make_net_evaluator(net, device="cpu"):
         x = torch.from_numpy(planes).to(device)
         if PROF.enabled:
             PROF.sync(); tf = PROF.clock()
-        logits, values = net(x)
+        with inference_autocast(device, fp16):
+            logits, values = net(x)
+        logits, values = logits.float(), values.float()  # FP32 for the masked softmax
         if PROF.enabled:
             PROF.sync()
             PROF.add("net_fwd", PROF.clock() - tf)

@@ -13,6 +13,7 @@ Start small (NUM_BLOCKS=5, CHANNELS=64). Othello is tiny — scale up only if th
 loss curves say the net is underfitting.
 """
 
+import contextlib
 import math
 import os
 import sys
@@ -77,6 +78,24 @@ def masked_log_softmax(logits, legal_mask):
     return F.log_softmax(logits, dim=-1)
 
 
+def inference_autocast(device, enabled):
+    """FP16 autocast for net INFERENCE on CUDA (T4 tensor cores); no-op otherwise.
+
+    FP16 only speeds up conv/linear matmuls on a CUDA GPU, so it's enabled ONLY
+    there; on CPU (tests, local runs) this returns a null context and everything
+    stays FP32 — keeping CPU play bit-exact with the parity oracles. Under autocast
+    the heavy conv/linear ops run in half precision while BatchNorm and softmax stay
+    FP32 (autocast's own policy); callers additionally cast logits/values back to
+    float32 right after the forward, so only the forward matmuls are ever FP16.
+
+    Trade-off: FP16 rounding (~1e-3) is far coarser than FP32's ~1e-7, so it is NOT
+    bit-identical to the FP32 net — that's why it is opt-in and off by default.
+    """
+    if enabled and str(device).startswith("cuda"):
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    return contextlib.nullcontext()
+
+
 class Evaluator:
     """Wraps a net for MCTS: boards -> (priors over 65 actions, value).
 
@@ -94,9 +113,10 @@ class Evaluator:
     unaffected; MCTS tie-breaking is protected by root Dirichlet noise anyway.
     """
 
-    def __init__(self, net, device="cpu"):
+    def __init__(self, net, device="cpu", fp16=False):
         self.net = net.to(device).eval()
         self.device = device
+        self.fp16 = fp16   # FP16 forward on CUDA (no-op on CPU); see inference_autocast
 
     @torch.no_grad()
     def evaluate_batch(self, boards, players):
@@ -108,7 +128,9 @@ class Evaluator:
         """
         planes = np.stack([encode(b, p) for b, p in zip(boards, players)])
         x = torch.from_numpy(planes).to(self.device)
-        logits, values = self.net(x)
+        with inference_autocast(self.device, self.fp16):
+            logits, values = self.net(x)
+        logits, values = logits.float(), values.float()  # back to FP32 for the softmax
         masks = np.stack([legal_action_mask(b, p) for b, p in zip(boards, players)])
         mask = torch.from_numpy(masks).to(self.device).bool()
         priors = torch.exp(masked_log_softmax(logits, mask)).cpu().numpy().astype(np.float32)
