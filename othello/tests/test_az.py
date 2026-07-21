@@ -238,6 +238,26 @@ def test_overfit_tiny():
     check(f"overfit-tiny loss collapses ({first:.2f} -> {float(total):.4f})", float(total) < 0.05)
 
 
+def test_lr_schedule_decays():
+    """The LR cosine-decays from cfg.lr to cfg.lr_final by the horizon, then holds,
+    and is a pure function of the iteration (the property that makes it resume-safe)."""
+    from train import lr_at_iteration
+    cfg = Config.tiny()                       # lr=1e-3, lr_final=1e-4, lr_horizon=4
+    lrs = [lr_at_iteration(cfg, it) for it in (1, 2, 3, 4, 5, 8)]
+    check("LR starts at cfg.lr at iteration 1", abs(lrs[0] - cfg.lr) < 1e-12)
+    check("LR is monotonically non-increasing",
+          all(a >= b - 1e-15 for a, b in zip(lrs, lrs[1:])))
+    check("LR decayed below the start by iteration 3", lrs[2] < cfg.lr)
+    check("LR reaches the floor at the horizon", abs(lrs[3] - cfg.lr_final) < 1e-9)
+    check("LR holds at the floor past the horizon", abs(lrs[5] - cfg.lr_final) < 1e-9)
+    # Disabling: lr_final == lr (or horizon <= 1) -> constant lr.
+    flat = Config.tiny(lr_final=cfg.lr)
+    check("decay disabled when lr_final == lr",
+          lr_at_iteration(flat, 3) == flat.lr and lr_at_iteration(flat, 99) == flat.lr)
+    one = Config.tiny(lr_horizon=1)
+    check("decay disabled when horizon <= 1", lr_at_iteration(one, 5) == one.lr)
+
+
 # --- multiprocess self-play (slow: spawns worker processes) ------------------
 def test_parallel_selfplay_matches_inprocess():
     """Multiprocess self-play produces exactly the games the single-process pool
@@ -362,11 +382,27 @@ def test_resume_continues_training():
                    if f.startswith("iter") and f.endswith(".pt"))
     check("resume continued to iteration 3", iters == [1, 2, 3])
 
+    # --- LR decay actually happened AND survived the resume ---
+    # Each checkpoint's optimizer state carries the LR used that iteration. A naive
+    # stateful scheduler would RESET to cfg.lr on the resumed session; because our
+    # schedule is a pure function of the global iteration, iter 3's LR must follow
+    # the decay curve, strictly below iter 1's. This is the resume-safety guarantee.
+    from train import lr_at_iteration
+    def _ckpt_lr(it):
+        c = torch.load(os.path.join(ckpt_dir, f"iter{it:04d}.pt"), map_location="cpu")
+        return c["optimizer"]["param_groups"][0]["lr"]
+    lr1, lr3 = _ckpt_lr(1), _ckpt_lr(3)
+    check("iteration-1 LR is the start LR", abs(lr1 - Config.tiny().lr) < 1e-9)
+    check("LR decayed by iteration 3 (across the resume)", lr3 < lr1)
+    check("resumed iter-3 LR follows the global schedule (not reset to lr0)",
+          abs(lr3 - lr_at_iteration(Config.tiny(), 3)) < 1e-9)
+
 
 FAST = [test_network_and_evaluator, test_mcts_basic, test_replay_buffer,
         test_selfplay_produces_valid_examples, test_evaluate_batch_matches_single,
         test_batched_selfplay_matches_serial, test_arrayops_selfplay_matches_serial_greedy,
-        test_torch_selfplay_matches_serial_greedy, test_overfit_tiny]
+        test_torch_selfplay_matches_serial_greedy, test_overfit_tiny,
+        test_lr_schedule_decays]
 SLOW = [test_parallel_selfplay_matches_inprocess, test_arrayops_parallel_matches_inprocess,
         test_torch_selfplay_matches_numpy_arrayops,
         test_train_loop_end_to_end, test_resume_continues_training]

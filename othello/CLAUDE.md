@@ -201,38 +201,58 @@ runnable artifact. See `README.md` for structure.
     targets). So `--games 200` very likely HELPED — **keep it** — and a flat loss curve is NOT a reason to stop.
   - **The one genuine loss signal:** value-loss went noisy and crept UP in the tail — the fingerprint of a
     constant LR too hot to settle (motivates the LR-decay task; see the heads-up below).
+- **LR decay BUILT ✅ (2026-07-21) — resume-safe cosine, on by default.** The constant `Adam lr=1e-3` now
+  **cosine-decays to `1e-4`** over `lr_horizon` global iterations (default **160**), then holds the floor
+  (open-ended-safe). Implemented the RECOMMENDED design: **the LR is a PURE FUNCTION of the global iteration**
+  (`az/train.py::lr_at_iteration`), set on the optimizer's `param_groups` at the top of each `train()` iter
+  (`set_lr`). No torch scheduler → **no state to persist → decay survives every Kaggle resume** (a stateful
+  scheduler would reset to `1e-3` each session and silently undo it). New `cfg.lr_final` / `cfg.lr_horizon`
+  fields (+ `--lr-final` / `--lr-horizon` overrides; disable with `--lr-final 1e-3` or `--lr-horizon 1`).
+  New **`lr` metric** logged to `metrics.jsonl` + W&B (watch it decay live) and printed per-iter. `weight_decay`
+  (L2) is untouched and SEPARATE. **`load_for_resume`** now seeds the optimizer LR from the schedule too (not a
+  stale saved `1e-3`). **For the real run:** resuming the 10×128 at ~iter73 cools the LR from `1e-3`→`~6.2e-4`
+  immediately, gliding to `1e-4` by iter160. **Tests:** FAST `test_lr_schedule_decays` (schedule shape + the
+  disable paths); SLOW `test_resume_continues_training` extended to assert iter3's checkpoint LR is BELOW iter1's
+  AND equals `lr_at_iteration(3)` — i.e. it decayed *and* survived the resume (didn't reset to `lr0`). All suites
+  green, FAST <20s. **STILL TO DO (next agent): RUN it + MEASURE** — resume iter66/73, then judge the
+  before/after checkpoints on the **Edax L2/L3 + Minimax yardstick, 40+ games** (NEVER the loss). Expect a MODEST
+  bump (a few %), maybe over 50% vs Edax L2 — not another 25→47 leap.
+
+- **Self-play PROFILER added ✅ (2026-07-21) — to price a native/C++ MCTS port BEFORE building it.**
+  Opt-in `--profile` flag (`az/profiling.py` + guarded hooks in `mcts_batched.make_net_evaluator` and
+  `selfplay._play_batch`; zero cost when off, parity tests untouched). Prints a per-iteration self-play
+  breakdown of the DEFAULT NumPy array-ops path: **net_fwd** (GPU forward — a C++ port CANNOT speed this
+  up) vs **net_prep / tree_ops / per_move_ops / postproc** (CPU NumPy — the C++ target), plus avg net-batch
+  size and an Amdahl verdict (hard ceiling = `sp_total/net_fwd`, + native×cores scenarios). **Why:** the whole
+  C++ payoff is Amdahl-bounded by the GPU-forward fraction; `--profile` MEASURES it instead of guessing. The
+  decisive number is what % of self-play is `net_fwd` on a **T4** (on a Mac CPU the net dominates — misleading;
+  must be measured on the GPU). **Pending: the user runs `--kaggle --iterations 2 --profile` on a T4 and pastes
+  the iter-2 breakdown back; then decide if the C++/native MCTS port is worth the build overhead.** Context: the
+  parked Torch GPU-search port already showed the search is op-launch/latency-bound (~2 g/s) — C++ native code is
+  the manual op-fusion alternative, resume-safe (only changes how games are generated, not the checkpoint).
 
 ## Next steps (in likely order)
 
-> **▶ CURRENT PRIORITY (updated 2026-07-20): run2 at iter66 is ~47% vs Edax L2 (up from 25% at iter49) — the
-> bot is STILL getting stronger; the flat loss was misleading.** See "Training RESULTS as of iter66". Web +
-> tournament tooling is DONE, and the `--games 200` data experiment worked (KEEP it — the strength climbed even
-> though the loss stayed flat). **Next move = add LR DECAY** — the value-loss is noisy/creeping up (constant
-> Adam `lr=1e-3`, no scheduler), leaving fine gains + checkpoint stability on the table; decay could tip iter66's
-> 47% *over* 50% vs Edax L2. **A NEW AGENT is implementing LR decay — see the "▶ HEADS-UP" note just below.**
-> After that: keep training (`--games 200`, `--sims ~120–150`), judging every batch on the **Edax/Minimax
-> yardstick with 40+ games, never the loss**. **Still open:** LR decay (next up), spectate/replay of
-> `data/game_records/*.json`, Elo instead of the win-rate ladder.
+> **▶ CURRENT PRIORITY (updated 2026-07-21): LR decay is now BUILT ✅ — the top task is to RUN it and MEASURE.**
+> run2 at iter66 is ~47% vs Edax L2 (up from 25% at iter49) — the bot is STILL getting stronger; the flat loss was
+> misleading (see "Training RESULTS as of iter66"). Web + tournament tooling is DONE, `--games 200` worked (KEEP
+> it), and **LR decay just landed** (resume-safe cosine `1e-3`→`1e-4` over 160 iters, on by default — see the
+> "LR decay BUILT" status bullet). **Next move (a NEW AGENT / the user):** resume the 10×128 run
+> (`--kaggle --resume auto --wandb --wandb-run run2`, optionally `--games 200 --sims ~120–150`), let the `lr`
+> curve decay on W&B, and **judge the before/after checkpoints on the Edax L2/L3 + Minimax yardstick, 40+ games,
+> NEVER the loss.** Expect a MODEST bump (a few %), maybe tipping iter66's 47% *over* 50% vs Edax L2 — not another
+> 25→47 leap. **Still open:** measure the LR-decay payoff (above), spectate/replay of `data/game_records/*.json`,
+> Elo instead of the win-rate ladder.
 >
-> **▶ HEADS-UP FOR THE NEXT AGENT — implement LR decay (the current top task):**
-> **What/why:** `az/train.py::make_optimizer` is plain `Adam(lr=cfg.lr=1e-3, weight_decay=1e-4)` with **no
-> scheduler** — the LR is constant for the whole multi-session run. Symptom: value-loss goes noisy and creeps
-> UP in the tail (LR too hot to settle; worsened by `--games 200` raising steps/iter to ~521). `weight_decay`
-> is L2 regularization, **NOT** LR decay — don't conflate them. Goal: decay the LR from ~1e-3 to ~1e-4 over the
-> run (cosine or step).
-> **THE GOTCHA — resume-safety (this run resumes across Kaggle sessions):** a stateful torch scheduler resets to
-> 1e-3 on every resume and silently undoes the decay UNLESS you persist `scheduler.state_dict()` in
-> `save_checkpoint` and restore it in `load_for_resume`. **Simplest resume-safe design (RECOMMENDED): make the
-> LR a pure function of the GLOBAL iteration** (already stored in the checkpoint) — compute
-> `lr = schedule(lr0=1e-3, lr1=1e-4, global_iter, horizon)` at the START of each iteration in `train()` and set
-> it on the optimizer's `param_groups`. No extra state to persist → decay continues seamlessly across resumes.
-> Add a `horizon` (target total iters, ~150–200) as a `cfg` field; the run is open-ended, so either a horizon
-> (cosine/linear to a floor) or a gentle per-iter exponential (`lr *= gamma`, no horizon) is fine — pick one and
-> document it. `load_for_resume` already re-applies `cfg.lr` on resume, so the injection point exists.
-> **Verify:** value-loss noise/creep calms; then MEASURE strength on the yardstick — the checkpoint before vs
-> after, vs **Edax L2 (and L3), 40+ games** (NOT the loss). Expect a MODEST bump (a few %), maybe enough to cross
-> 50% vs Edax L2 — not another 25→47 leap. Keep the FAST test tier <20s; extend `test_resume_continues_training`
-> (SLOW) to assert the LR actually decayed and survived a resume.
+> **▶ DONE — LR decay (implemented 2026-07-21; was the top task):** shipped exactly the RECOMMENDED resume-safe
+> design — the LR is a **pure function of the global iteration** (`az/train.py::lr_at_iteration`, cosine `cfg.lr`
+> → `cfg.lr_final` over `cfg.lr_horizon`, then hold), set on `optimizer.param_groups` at the top of each `train()`
+> iteration (`set_lr`). No scheduler state to persist → seamless across Kaggle resumes. Config fields
+> `lr_final=1e-4` / `lr_horizon=160` (+ `--lr-final` / `--lr-horizon`; disable via `--lr-final 1e-3`). New `lr`
+> metric on jsonl/W&B + per-iter print. `weight_decay` (L2) left alone — it is NOT LR decay. Tests:
+> `test_lr_schedule_decays` (FAST) + an extended `test_resume_continues_training` (SLOW) proving the LR decayed
+> AND survived a resume (iter3 LR < iter1 LR and == `lr_at_iteration(3)`, not reset to `lr0`). See the "LR decay
+> BUILT" status bullet for the full detail. **What's LEFT is measurement, not code** (see CURRENT PRIORITY).
 >
 > **Bottleneck cheat-sheet (settled):** more **sims / more games → CPU** on the NumPy path (search+rules
 > are NumPy, ~87% of self-play). Bigger **net → GPU** (cheap). The Torch port moved the search onto the

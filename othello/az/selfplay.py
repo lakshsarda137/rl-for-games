@@ -64,6 +64,7 @@ import board_batched as bb
 
 from mcts import MCTS, root_value, visit_policy
 from mcts_batched import make_net_evaluator, run_batched
+from profiling import PROF
 
 
 def _transform_planes(planes, i):
@@ -370,8 +371,14 @@ def _play_batch(evaluator, cfg, rng, num_games, iteration=0, make_records=False,
     while alive.any():
         idx = np.where(alive)[0]
         sub_boards, sub_players = boards[idx], players[idx].copy()
+        # search_total (includes the net eval called inside run_batched); the profiler
+        # subtracts net_eval to isolate the pure CPU tree-search — see az/profiling.py.
+        if PROF.enabled:
+            _s0 = PROF.clock()
         counts, root_vals = run_batched(sub_boards, sub_players, cfg.sims_selfplay,
                                         evaluate, cfg, rng=rng, add_noise=add_noise)
+        if PROF.enabled:
+            PROF.add("search_total", PROF.clock() - _s0); PROF.count("plies_searched")
         temperature = 1.0 if ply < cfg.temp_moves else 0.0
         pis = _visit_policies(counts, temperature)
         planes = bb.encode_batch(sub_boards, sub_players)
@@ -403,6 +410,9 @@ def _play_batch(evaluator, cfg, rng, num_games, iteration=0, make_records=False,
                 rec_moves[g][-1]["board"] = [int(x) for x in boards[g].reshape(-1)]
         alive[idx[newly_terminal]] = False
 
+    # postproc: x8 dihedral augmentation + example/record building (NumPy on CPU).
+    if PROF.enabled:
+        _p0 = PROF.clock()
     results = bb.winner(boards)
     black_disc, white_disc = bb.count_discs(boards)
     per_game = []
@@ -422,6 +432,8 @@ def _play_batch(evaluator, cfg, rng, num_games, iteration=0, make_records=False,
                       "result": f"{'+' if margin >= 0 else ''}{margin}",
                       "plies": len(history[g]), "moves": rec_moves[g]}
         per_game.append((examples, record, len(history[g])))
+    if PROF.enabled:
+        PROF.add("postproc", PROF.clock() - _p0)
     return per_game
 
 

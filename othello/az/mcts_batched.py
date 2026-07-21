@@ -193,13 +193,29 @@ def make_net_evaluator(net, device="cpu"):
     import torch
 
     from network import masked_log_softmax
+    from profiling import PROF
 
     @torch.no_grad()
     def evaluate(boards, players):
+        # Profiling (opt-in, off by default): split the net FORWARD (GPU — the part a
+        # C++ port can't speed up) from the encode/transfer prep. cuda.synchronize()
+        # brackets the forward so its async kernels aren't misattributed downstream.
+        if PROF.enabled:
+            t0 = PROF.clock()
         planes = bb.encode_batch(boards, players)
-        logits, values = net(torch.from_numpy(planes).to(device))
+        x = torch.from_numpy(planes).to(device)
+        if PROF.enabled:
+            PROF.sync(); tf = PROF.clock()
+        logits, values = net(x)
+        if PROF.enabled:
+            PROF.sync()
+            PROF.add("net_fwd", PROF.clock() - tf)
+            PROF.count("fwd_calls"); PROF.count("positions", len(boards))
         mask = torch.from_numpy(bb.legal_action_masks(boards, players)).to(device).bool()
         priors = torch.exp(masked_log_softmax(logits, mask)).cpu().numpy().astype(np.float32)
-        return priors, values.cpu().numpy().astype(np.float32)
+        out = priors, values.cpu().numpy().astype(np.float32)
+        if PROF.enabled:
+            PROF.add("net_eval_total", PROF.clock() - t0)
+        return out
 
     return evaluate
