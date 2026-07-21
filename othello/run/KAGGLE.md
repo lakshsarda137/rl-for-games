@@ -83,6 +83,7 @@ Run from the `othello/` dir. `--out /kaggle/working/az_data` keeps outputs toget
 | Run more/fewer iters | add `--iterations N` (when resuming, N = N *more* iterations) |
 | Stronger training targets | add `--sims N` (MCTS sims/move in self-play; default 96). Higher = better targets, fewer games/sec |
 | Bigger/smaller net | add `--net BxC` (default `10x128`; `--net 5x64` = the old quick net) |
+| Tune LR decay | `--lr-final LR` / `--lr-horizon N` (defaults `1e-4` / `160`; LR cosine-decays from `1e-3`). Auto-on; set `--lr-final 1e-3` to disable |
 | More games per iter | add `--games N` (default 96; **also scales train-steps + buffer linearly**, so the extra data is trained on) |
 | GPU search (parked) | `--selfplay-torch --games N` runs the SEARCH on the GPU — measured on a T4, caps ~2 g/s and loses to NumPy at small batch, so NOT recommended there (see the flag note below) |
 
@@ -100,6 +101,13 @@ The flags that matter:
   batch was 0.5 @96 / 1.5 @512 / 2.0 @1024 games; it scales with batch but caps ~2 g/s (op-launch-bound,
   GPU only ~76% at best) and is *slower* than NumPy at the ~96-game batch training wants. Parked as a
   verified opt-in for better GPUs / a future op-fusion pass. **For training, use the plain NumPy path.**
+- **`--lr-final LR` / `--lr-horizon N`** — the learning rate now **cosine-decays** from `cfg.lr` (`1e-3`)
+  down to `--lr-final` (default `1e-4`), reaching the floor at global iteration `--lr-horizon` (default
+  `160`) and holding there. It is **on by default** — a plain `--resume auto` continues the decay with no
+  extra flags. The LR is a **pure function of the global iteration**, so it's resume-safe: it can't reset to
+  `1e-3` on a new Kaggle session (a stateful scheduler would). Watch the new **`lr`** metric on W&B decay live.
+  Disable with `--lr-final 1e-3` (== the start LR) or `--lr-horizon 1`. Why: a constant `1e-3` was too hot in
+  the tail (value-loss got noisy / crept up); decaying lets the fit settle.
 - **`--wandb [--wandb-run NAME]`** — stream metrics live to wandb.ai. Reuse the **same** NAME with `--resume` to continue **one** live curve across sessions.
 - **`--resume auto`** — continue the newest checkpoint (see next section). `--iterations N` then means N *more* iterations.
 - **`--eval-every N`** — minimax-ladder eval every N iters (**0 = off, the default**). It's inspection-only (never affects learning) and the slowest part of an iteration, so it's off by default; measure strength on demand with the web **Arena** instead, or turn it on here for live strength curves.

@@ -27,9 +27,10 @@ sys.path.insert(0, _HERE)
 from config import Config
 from evaluate import ladder_eval
 from network import Evaluator, OthelloNet
+from profiling import PROF, format_report
 from replay_buffer import ReplayBuffer
 from selfplay import generate_games, shutdown_selfplay_workers
-from train import make_optimizer, train_steps
+from train import lr_at_iteration, make_optimizer, set_lr, train_steps
 
 DATA_DIR = os.path.normpath(os.path.join(_HERE, "..", "data"))
 
@@ -46,13 +47,15 @@ def resolve_device(requested):
     return requested
 
 
-def flat_metrics(loss, buffer_len, games_per_sec, avg_len, evals):
+def flat_metrics(loss, buffer_len, games_per_sec, avg_len, evals, lr=None):
     """One flat {name: number} dict per iteration, for jsonl + TensorBoard."""
     m = {
         "loss/total": loss["total"], "loss/policy": loss["policy"],
         "loss/value": loss["value"], "buffer_size": buffer_len,
         "selfplay_games_per_sec": games_per_sec,
     }
+    if lr is not None:
+        m["lr"] = lr
     if avg_len:
         m["game_len_avg"] = avg_len
     if evals:
@@ -230,13 +233,16 @@ def load_for_resume(path, cfg, ckpt_dir):
     net = OthelloNet(nb, ch).to(cfg.device)
     net.load_state_dict(ckpt["state_dict"])
     optimizer = make_optimizer(net, cfg)
+    start_iter = int(ckpt.get("iteration", 0))
     if "optimizer" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer"])
-        # Honour any lr/weight_decay the user changed for this session.
+        # Honour any weight_decay the user changed for this session. The LR is set
+        # by the resume-safe schedule (lr_at_iteration) at the top of each train()
+        # iteration; seed it here too so the optimizer is consistent even before the
+        # first step (a stale saved lr from an older constant-LR run would mislead).
         for group in optimizer.param_groups:
-            group["lr"] = cfg.lr
+            group["lr"] = lr_at_iteration(cfg, start_iter + 1)
             group["weight_decay"] = cfg.weight_decay
-    start_iter = int(ckpt.get("iteration", 0))
     print(f"[resume] loaded {os.path.basename(path)} (iteration {start_iter}); "
           f"continuing at iteration {start_iter + 1}. "
           f"{'optimizer restored' if 'optimizer' in ckpt else 'fresh optimizer'}; "
@@ -253,17 +259,29 @@ def _write_records(records, out_dir, iteration):
 
 def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
           verbose=True, resume=None, use_wandb=False, wandb_project=None,
-          wandb_run=None, wandb_ckpt_every=2):
+          wandb_run=None, wandb_ckpt_every=2, profile=False):
     """Run the loop for cfg.iterations more iterations; return (net, buffer, history).
 
     `resume` (a checkpoint path, or "auto"/"latest") continues an earlier run:
     the net + optimizer are loaded and iteration numbering picks up where the
     checkpoint left off, so metrics.jsonl and checkpoints keep a single timeline
     across sessions. `cfg.iterations` is always "how many MORE iterations now".
+
+    `profile=True` prints a per-iteration self-play breakdown (net-forward vs CPU
+    search/rules) — the measurement for the "is a native MCTS port worth it?"
+    question. It instruments the default NumPy array-ops path; see az/profiling.py.
     """
     cfg.device = resolve_device(cfg.device)
     if eval_every is None:                     # default: honour the config
         eval_every = getattr(cfg, "eval_every", 1)
+    # Profiler: GPU-correct timing needs cuda.synchronize on a CUDA device (no-op on CPU).
+    _sync = None
+    _gpu_name = None
+    if profile and cfg.device == "cuda":
+        _sync = torch.cuda.synchronize
+        _gpu_name = torch.cuda.get_device_name(0)
+    PROF.configure(profile, sync=_sync)
+    _cpu_count = os.cpu_count()
     torch.manual_seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
     ckpt_dir = os.path.join(out_dir, "checkpoints")
@@ -290,13 +308,25 @@ def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
 
     try:
         for it in range(start_iter + 1, start_iter + 1 + cfg.iterations):
+            # --- learning-rate decay ---
+            # Cosine-decay the LR as a PURE FUNCTION of the global iteration `it`
+            # (resume-safe: no scheduler state to persist — see train.lr_at_iteration).
+            # Set before train_steps so this iteration trains at the decayed rate; it
+            # lands in the checkpoint's optimizer state, so a resume continues seamlessly.
+            cur_lr = set_lr(optimizer, lr_at_iteration(cfg, it))
+
             # --- self-play ---
             net.eval()
             evaluator = Evaluator(net, cfg.device)
+            if profile:
+                PROF.reset()
             t0 = time.time()
             examples, records, sp = generate_games(
                 evaluator, cfg, rng, cfg.games_per_iter, iteration=it, make_records=True)
             sp_time = time.time() - t0
+            if profile:
+                print(format_report(sp_time, iteration=it, device=cfg.device,
+                                    cpu_count=_cpu_count, gpu_name=_gpu_name))
             buffer.extend(examples)
             _write_records(records, rec_dir, it)
 
@@ -313,11 +343,11 @@ def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
             games_per_sec = cfg.games_per_iter / sp_time if sp_time else 0.0
             row = {"iter": it, "loss": loss, "buffer": len(buffer),
                    "avg_game_len": sp["avg_game_len"], "games_per_sec": games_per_sec,
-                   **evals}
+                   "lr": cur_lr, **evals}
             history.append(row)
             if logger:
                 logger.log(it, flat_metrics(loss, len(buffer), games_per_sec,
-                                            sp["avg_game_len"], evals))
+                                            sp["avg_game_len"], evals, lr=cur_lr))
             save_checkpoint(net, cfg, it, row, os.path.join(ckpt_dir, f"iter{it:04d}.pt"),
                             optimizer=optimizer, rng=rng)
             # A stable name for the newest checkpoint, so `--resume` and
@@ -334,6 +364,7 @@ def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
                       + f" maxbeat:{evals['max_depth_beaten']}") if evals else ""
                 print(f"iter {it:3d}  loss {loss['total']:.3f} "
                       f"(p {loss['policy']:.3f} v {loss['value']:.3f})  "
+                      f"lr {cur_lr:.2e}  "
                       f"buf {len(buffer):6d}  {games_per_sec:.1f} g/s{wr}")
     finally:
         shutdown_selfplay_workers()   # reap self-play worker processes
@@ -357,6 +388,13 @@ def main():
                          "resumed session for a low->high ramp (e.g. 96 then 200).")
     ap.add_argument("--sims-eval", type=int, default=None, metavar="N",
                     help="MCTS simulations per move in EVALUATION (overrides cfg.sims_eval).")
+    ap.add_argument("--lr-final", type=float, default=None, metavar="LR",
+                    help="floor the learning rate cosine-decays to (overrides cfg.lr_final). "
+                         "Set equal to the start LR (cfg.lr) to DISABLE decay. Resume-safe: "
+                         "the LR is a pure function of the global iteration.")
+    ap.add_argument("--lr-horizon", type=int, default=None, metavar="N",
+                    help="global iteration by which the LR reaches --lr-final (overrides "
+                         "cfg.lr_horizon; held at the floor after). ~150-200 for a full run.")
     ap.add_argument("--workers", type=int, default=None,
                     help="self-play worker processes (default from config; set to #CPU cores)")
     ap.add_argument("--net", default=None, metavar="BxC",
@@ -384,6 +422,10 @@ def main():
     ap.add_argument("--wandb-ckpt-every", type=int, default=2, metavar="N",
                     help="with --wandb, upload the checkpoint to W&B every N iters so "
                          "you can pull + play the bot mid-training (0 = never).")
+    ap.add_argument("--profile", action="store_true",
+                    help="print a per-iteration self-play time breakdown (GPU net-forward "
+                         "vs CPU search/rules) to measure the potential native/C++ MCTS "
+                         "speed-up. Instruments the default NumPy array-ops path.")
     ap.add_argument("--resume", default=None, metavar="CKPT",
                     help="continue from a checkpoint: a path, or 'auto'/'latest' for "
                          "the newest in <out>/checkpoints. --iterations is then how "
@@ -422,6 +464,10 @@ def main():
         cfg.sims_selfplay = args.sims
     if args.sims_eval is not None:
         cfg.sims_eval = args.sims_eval
+    if args.lr_final is not None:
+        cfg.lr_final = args.lr_final
+    if args.lr_horizon is not None:
+        cfg.lr_horizon = args.lr_horizon
     if args.workers is not None:
         cfg.selfplay_workers = args.workers
     if args.device:
@@ -432,14 +478,17 @@ def main():
     eval_note = "eval off" if cfg.eval_every == 0 else f"eval every {cfg.eval_every}"
     sp_backend = "torch-search" if getattr(cfg, "selfplay_torch", False) else (
         "arrayops" if cfg.selfplay_arrayops else "pool")
+    lr_note = (f"lr {cfg.lr:.1e}->{cfg.lr_final:.1e} cosine over {cfg.lr_horizon} iters"
+               if cfg.lr_final < cfg.lr and cfg.lr_horizon > 1
+               else f"lr {cfg.lr:.1e} constant")
     print(f"Training: {name} config, {cfg.iterations} {verb}, "
           f"net {cfg.num_blocks}x{cfg.channels}, device={resolve_device(cfg.device)}, "
           f"{cfg.games_per_iter} games/iter, {cfg.sims_selfplay} self-play sims "
           f"({sp_backend}), {cfg.steps_per_iter} train steps/iter, "
-          f"buffer {cfg.buffer_size}, {eval_note}")
+          f"buffer {cfg.buffer_size}, {lr_note}, {eval_note}")
     train(cfg, out_dir=args.out, use_tb=args.tensorboard, resume=args.resume,
           use_wandb=args.wandb, wandb_project=args.wandb_project, wandb_run=args.wandb_run,
-          wandb_ckpt_every=args.wandb_ckpt_every)
+          wandb_ckpt_every=args.wandb_ckpt_every, profile=args.profile)
 
 
 if __name__ == "__main__":

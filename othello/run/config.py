@@ -53,8 +53,15 @@ class Config:
     # Training
     batch_size: int = 512
     steps_per_iter: int = 400
-    lr: float = 1e-3
-    weight_decay: float = 1e-4
+    lr: float = 1e-3              # starting/max learning rate (Adam)
+    lr_final: float = 1e-4        # LR floor: cosine-decay lr -> lr_final over lr_horizon
+                                  # iterations, then hold. Set lr_final == lr (or
+                                  # lr_horizon <= 1) to disable decay. See
+                                  # az/train.py::lr_at_iteration — the decay is a pure
+                                  # function of the GLOBAL iteration, so it's resume-safe
+                                  # across Kaggle sessions (no scheduler state to persist).
+    lr_horizon: int = 160         # global iteration by which the LR reaches lr_final.
+    weight_decay: float = 1e-4    # L2 regularization — SEPARATE from LR decay above.
 
     # Evaluation / ladder
     eval_every: int = 1           # run the minimax-ladder eval every N iterations;
@@ -85,6 +92,9 @@ class Config:
             games_per_iter=4, temp_moves=6,
             buffer_size=5_000,
             batch_size=32, steps_per_iter=10,
+            lr_horizon=4,             # tiny horizon so the LR decay is visible in
+                                      # the seconds-scale resume test (lr 1e-3 -> 1e-4
+                                      # by iter 4); the real run uses the full horizon.
             eval_games=4, eval_depths=(1, 2),
             iterations=2,
             selfplay_arrayops=False,

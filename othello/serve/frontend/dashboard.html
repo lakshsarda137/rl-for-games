@@ -445,6 +445,22 @@
       yMin: 0, yMax: lossMax, yTicks: 4, yFmt: (v) => fmt(v, 2), valFmt: (v) => fmt(v, 3), xAll,
     });
 
+    // 3b) learning rate (only if logged — older runs won't have it)
+    const lr = series(rows, "lr");
+    if (lr.length) {
+      const lrMax = Math.max(...lr.map(p => p.y), 1e-6);
+      addCard({
+        title: "Learning rate",
+        why: `How big a step each training update takes. It <b>cosine-decays</b> from a high
+          rate down to a small floor over the run: big early steps learn fast, small late steps
+          let the fit settle instead of jittering. A constant rate that's too hot shows up as a
+          noisy, creeping value loss in the tail — decaying it is the cure.`,
+        series: [{ name: "lr", color: COLORS[3] || COLORS[0], pts: lr }],
+        yMin: 0, yMax: lrMax * 1.1, yTicks: 4,
+        yFmt: (v) => v.toExponential(1), valFmt: (v) => v.toExponential(2), xAll,
+      });
+    }
+
     // 4) throughput
     addCard({
       title: "Self-play speed",
@@ -496,13 +512,14 @@
       ["iter", "iter", 0], ["loss/total", "loss", 3],
       ["loss/policy", "policy", 3], ["loss/value", "value", 3],
       ["selfplay_games_per_sec", "g/s", 1], ["buffer_size", "buffer", 0],
-      ["game_len_avg", "len", 1], ["max_depth_beaten", "beat", 0],
+      ["lr", "lr", "e"], ["game_len_avg", "len", 1], ["max_depth_beaten", "beat", 0],
       ...depths.map(d => [`winrate/minimax_d${d}`, `d${d}`, "%"]),
     ];
     const head = "<thead><tr>" + cols.map(c => `<th>${c[1]}</th>`).join("") + "</tr></thead>";
     const body = "<tbody>" + rows.map(r => "<tr>" + cols.map(([k, , d]) => {
       const v = r[k];
-      const cell = v == null ? "—" : (d === "%" ? pct(v) : (d === 0 ? fmt(v, 0) : fmt(v, d)));
+      const cell = v == null ? "—"
+        : (d === "%" ? pct(v) : (d === "e" ? v.toExponential(1) : (d === 0 ? fmt(v, 0) : fmt(v, d))));
       return `<td>${cell}</td>`;
     }).join("") + "</tr>").join("") + "</tbody>";
     $("dataTable").innerHTML = head + body;
