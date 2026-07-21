@@ -232,13 +232,18 @@ function fillPlayerSelect(sel) {
     for (const c of config.checkpoints) add("az@" + c.label, "AZ · " + ckptLabelText(c), g);
     sel.appendChild(g);
   }
+  if ((config.external_models || []).length) {
+    const ge = document.createElement("optgroup"); ge.label = "External RL bot";
+    for (const m of config.external_models) add("extbot@" + m.stem, "RL · " + m.label, ge);
+    sel.appendChild(ge);
+  }
   const g2 = document.createElement("optgroup"); g2.label = "Engines & baselines";
   add("minimax", "Minimax", g2);
   if (config.edax_available) add("edax", "Edax", g2);
   add("random", "Random", g2); add("greedy", "Greedy", g2);
   sel.appendChild(g2);
 }
-function paramKind(t) { return t.startsWith("az@") ? "az" : (t === "minimax" ? "minimax" : (t === "edax" ? "edax" : null)); }
+function paramKind(t) { return (t.startsWith("az@") || t.startsWith("extbot@")) ? "az" : (t === "minimax" ? "minimax" : (t === "edax" ? "edax" : null)); }
 function syncAddParam() {
   const t = $("addType").value, p = $("addParam"), k = paramKind(t);
   p.hidden = !k;
@@ -248,6 +253,7 @@ function syncAddParam() {
 }
 function specOf(t, pv) {
   if (t.startsWith("az@")) return "az:" + pv + "@" + t.slice(3);
+  if (t.startsWith("extbot@")) return "extbot:" + pv + "@" + t.slice(7);
   if (t === "minimax") return "minimax:" + pv;
   if (t === "edax") return "edax:" + pv;
   return t;
@@ -258,6 +264,10 @@ function prettySpec(spec) {
   if (spec === "greedy") return "Greedy";
   if (spec.startsWith("minimax:")) return "Minimax d" + spec.split(":")[1];
   if (spec.startsWith("edax")) return "Edax L" + (spec.split(":")[1] || "6");
+  if (spec.startsWith("extbot")) {
+    const at = spec.indexOf("@"), sims = (spec.match(/extbot:(\d+)/) || [])[1];
+    return "RL " + (at >= 0 ? spec.slice(at + 1) : "bot") + (sims ? " · " + sims : "");
+  }
   if (spec.startsWith("az")) {
     const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest", sims = (spec.match(/az:(\d+)/) || [])[1];
     const r = ck.match(/^(.+)-iter0*(\d+)$/), mi = ck.match(/iter0*(\d+)/);

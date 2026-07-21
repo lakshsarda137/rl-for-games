@@ -258,6 +258,28 @@ def test_lr_schedule_decays():
     check("decay disabled when horizon <= 1", lr_at_iteration(one, 5) == one.lr)
 
 
+def test_external_azg_bot_plays_legal():
+    """The external alpha-zero-general net wrapper: loads a same-arch checkpoint,
+    produces a valid masked policy in OUR convention, and plays legal moves via OUR
+    MCTS. Uses a random-init net saved like the repo does, so it needs no download."""
+    import tempfile
+    from external_bot import OthelloNNet, azg_evaluator, azg_player, load_azg_net
+    # A tiny same-SHAPE net (width inferred on load) — keeps this FAST; the real
+    # pretrained model is 512-wide and loads through the identical code path.
+    net = OthelloNNet(num_channels=8)
+    path = os.path.join(tempfile.mkdtemp(prefix="azg_"), "net.pth.tar")
+    torch.save({"state_dict": net.state_dict()}, path)   # saved the alpha-zero-general way
+    loaded = load_azg_net(path, "cpu")
+    board, player = initial_board(), BLACK
+    priors, value = azg_evaluator(loaded, "cpu")(board, player)
+    legal = legal_action_mask(board, player) > 0
+    check("azg priors sum to 1 over legal actions", abs(float(priors.sum()) - 1.0) < 1e-5)
+    check("azg priors are 0 on illegal actions", float(priors[~legal].sum()) == 0.0)
+    check("azg value in [-1, 1]", -1.0 <= value <= 1.0)
+    move = azg_player(path, sims=8, net=loaded)(board, player)
+    check("external azg bot plays a legal move via our MCTS", bool(legal[move]))
+
+
 def test_fp16_flag_is_cpu_noop():
     """--fp16 is a CUDA-only lever (T4 tensor cores). On CPU it MUST be an exact
     no-op so local runs and the FP32 parity oracles are untouched — the FP16 path
@@ -421,7 +443,8 @@ FAST = [test_network_and_evaluator, test_mcts_basic, test_replay_buffer,
         test_selfplay_produces_valid_examples, test_evaluate_batch_matches_single,
         test_batched_selfplay_matches_serial, test_arrayops_selfplay_matches_serial_greedy,
         test_torch_selfplay_matches_serial_greedy, test_overfit_tiny,
-        test_lr_schedule_decays, test_fp16_flag_is_cpu_noop]
+        test_lr_schedule_decays, test_fp16_flag_is_cpu_noop,
+        test_external_azg_bot_plays_legal]
 SLOW = [test_parallel_selfplay_matches_inprocess, test_arrayops_parallel_matches_inprocess,
         test_torch_selfplay_matches_numpy_arrayops,
         test_train_loop_end_to_end, test_resume_continues_training]
