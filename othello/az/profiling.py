@@ -63,7 +63,7 @@ def _pct(x, total):
 
 
 def format_report(sp_total, iteration=None, device="cpu", cpu_count=None,
-                  gpu_name=None):
+                  gpu_name=None, fp16=False):
     """Render one iteration's buckets into a decision-oriented text block.
 
     `sp_total` is the measured wall-time of `generate_games` for this iteration
@@ -90,6 +90,7 @@ def format_report(sp_total, iteration=None, device="cpu", cpu_count=None,
         facts += f"  vCPUs={cpu_count}"
     if gpu_name:
         facts += f"  gpu={gpu_name}"
+    facts += f"  inference={'FP16' if fp16 else 'FP32'}"
     lines.append(f"  {facts}")
     lines.append("-" * 64)
     lines.append(f"  {'bucket':<16}{'seconds':>10}{'  share':>9}   {'speed-up-able?'}")

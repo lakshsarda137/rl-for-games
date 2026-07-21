@@ -84,6 +84,8 @@ Run from the `othello/` dir. `--out /kaggle/working/az_data` keeps outputs toget
 | Stronger training targets | add `--sims N` (MCTS sims/move in self-play; default 96). Higher = better targets, fewer games/sec |
 | Bigger/smaller net | add `--net BxC` (default `10x128`; `--net 5x64` = the old quick net) |
 | Tune LR decay | `--lr-final LR` / `--lr-horizon N` (defaults `1e-4` / `160`; LR cosine-decays from `1e-3`). Auto-on; set `--lr-final 1e-3` to disable |
+| Faster net eval | `--fp16` runs the self-play net forward in FP16 on the T4's tensor cores (~43% of self-play is the net). Opt-in; pair with `--profile` to see `net_fwd` drop, then judge strength on Edax |
+| Profile self-play | `--profile` prints a per-iter time breakdown (GPU net-forward vs CPU search) — used to decide if a native/C++ MCTS port is worth it |
 | More games per iter | add `--games N` (default 96; **also scales train-steps + buffer linearly**, so the extra data is trained on) |
 | GPU search (parked) | `--selfplay-torch --games N` runs the SEARCH on the GPU — measured on a T4, caps ~2 g/s and loses to NumPy at small batch, so NOT recommended there (see the flag note below) |
 
@@ -101,6 +103,16 @@ The flags that matter:
   batch was 0.5 @96 / 1.5 @512 / 2.0 @1024 games; it scales with batch but caps ~2 g/s (op-launch-bound,
   GPU only ~76% at best) and is *slower* than NumPy at the ~96-game batch training wants. Parked as a
   verified opt-in for better GPUs / a future op-fusion pass. **For training, use the plain NumPy path.**
+- **`--fp16`** — run the self-play net **forward in FP16** on CUDA (the T4's tensor cores). A `--profile`
+  run showed the net forward is **~43%** of self-play with the 10x128 net — the single biggest slice, and the
+  one part a CPU/C++ search port *cannot* speed up — so FP16 attacks it directly. No-op on CPU. **Opt-in:**
+  FP16 rounding (~1e-3) isn't bit-exact, so pair it with `--profile` to confirm `net_fwd` drops, then judge
+  strength vs **Edax (40+ games)** before baking it into a config. BatchNorm + softmax stay FP32 (only the
+  conv/linear matmuls go half), so the accuracy hit is small.
+- **`--profile`** — print a per-iteration self-play time breakdown (GPU **net_fwd** vs CPU **tree_ops /
+  net_prep / postproc**) with an Amdahl verdict. This is the measurement behind "is a native/C++ MCTS port
+  worth it?" — on a T4 with the 10x128 net it showed a ~2.3x hard ceiling (net forward is 43%, un-C++-able),
+  which is why FP16 (attacking that 43%) is the cheaper win. Instruments the default NumPy array-ops path.
 - **`--lr-final LR` / `--lr-horizon N`** — the learning rate now **cosine-decays** from `cfg.lr` (`1e-3`)
   down to `--lr-final` (default `1e-4`), reaching the floor at global iteration `--lr-horizon` (default
   `160`) and holding there. It is **on by default** — a plain `--resume auto` continues the decay with no

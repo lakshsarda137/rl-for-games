@@ -39,6 +39,14 @@ class Config:
                                      # workers all share one device and contend (net eval serialises
                                      # across processes), so >1 is SLOWER there (2.1→1.3 g/s on a T4).
                                      # Keep 1 on GPU; raise only when device='cpu'.
+    infer_fp16: bool = False         # FP16 net inference in self-play on CUDA (the T4's
+                                     # tensor cores). The net forward is the single biggest
+                                     # slice of self-play on the 10x128 net (~43% on a T4),
+                                     # and it's the one part a CPU/C++ search port can't touch;
+                                     # FP16 attacks it directly. No-op on CPU. OPT-IN (--fp16):
+                                     # FP16 rounding (~1e-3) breaks bit-parity with the FP32
+                                     # oracles, so it's off by default — measure strength on
+                                     # Edax before baking it into a config.
     selfplay_torch: bool = False     # run array-ops self-play on the TORCH engine + MCTS
                                      # (engine/board_torch.py + az/mcts_torch.py) instead of NumPy,
                                      # so the whole search runs on `device` (the GPU on Kaggle), not

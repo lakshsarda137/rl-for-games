@@ -359,7 +359,8 @@ def _play_batch(evaluator, cfg, rng, num_games, iteration=0, make_records=False,
     coupled through it (unlike the per-seed pool path) — fine for training, and
     with `add_noise=False` + greedy play it's deterministic and matches serial
     greedy self-play move-for-move (`tests/test_batched.py`)."""
-    evaluate = make_net_evaluator(evaluator.net, evaluator.device)
+    evaluate = make_net_evaluator(evaluator.net, evaluator.device,
+                                  fp16=getattr(cfg, "infer_fp16", False))
     boards = bb.initial_boards(num_games)
     players = np.full(num_games, BLACK, np.int8)
     alive = ~bb.is_terminal(boards)

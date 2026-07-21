@@ -258,6 +258,25 @@ def test_lr_schedule_decays():
     check("decay disabled when horizon <= 1", lr_at_iteration(one, 5) == one.lr)
 
 
+def test_fp16_flag_is_cpu_noop():
+    """--fp16 is a CUDA-only lever (T4 tensor cores). On CPU it MUST be an exact
+    no-op so local runs and the FP32 parity oracles are untouched — the FP16 path
+    only ever engages on a real GPU (verified there by measuring, not in tests)."""
+    from mcts_batched import make_net_evaluator
+    net = _tiny_net()
+    boards = np.array([initial_board(), initial_board()], dtype=np.int8)
+    players = np.array([BLACK, BLACK], dtype=np.int8)
+    p32, v32 = make_net_evaluator(net, "cpu", fp16=False)(boards, players)
+    p16, v16 = make_net_evaluator(net, "cpu", fp16=True)(boards, players)
+    check("fp16 flag is a bit-exact no-op on CPU (priors)", np.array_equal(p32, p16))
+    check("fp16 flag is a bit-exact no-op on CPU (values)", np.array_equal(v32, v16))
+    # ...and via the single-position Evaluator used by eval/arena/play.
+    e32 = Evaluator(net, "cpu", fp16=False).evaluate_batch([initial_board()], [BLACK])
+    e16 = Evaluator(net, "cpu", fp16=True).evaluate_batch([initial_board()], [BLACK])
+    check("Evaluator fp16 flag is a bit-exact no-op on CPU",
+          np.array_equal(e32[0][0], e16[0][0]) and e32[0][1] == e16[0][1])
+
+
 # --- multiprocess self-play (slow: spawns worker processes) ------------------
 def test_parallel_selfplay_matches_inprocess():
     """Multiprocess self-play produces exactly the games the single-process pool
@@ -402,7 +421,7 @@ FAST = [test_network_and_evaluator, test_mcts_basic, test_replay_buffer,
         test_selfplay_produces_valid_examples, test_evaluate_batch_matches_single,
         test_batched_selfplay_matches_serial, test_arrayops_selfplay_matches_serial_greedy,
         test_torch_selfplay_matches_serial_greedy, test_overfit_tiny,
-        test_lr_schedule_decays]
+        test_lr_schedule_decays, test_fp16_flag_is_cpu_noop]
 SLOW = [test_parallel_selfplay_matches_inprocess, test_arrayops_parallel_matches_inprocess,
         test_torch_selfplay_matches_numpy_arrayops,
         test_train_loop_end_to_end, test_resume_continues_training]

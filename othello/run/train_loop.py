@@ -317,7 +317,7 @@ def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
 
             # --- self-play ---
             net.eval()
-            evaluator = Evaluator(net, cfg.device)
+            evaluator = Evaluator(net, cfg.device, fp16=getattr(cfg, "infer_fp16", False))
             if profile:
                 PROF.reset()
             t0 = time.time()
@@ -325,8 +325,10 @@ def train(cfg, out_dir=DATA_DIR, eval_every=None, log=True, use_tb=False,
                 evaluator, cfg, rng, cfg.games_per_iter, iteration=it, make_records=True)
             sp_time = time.time() - t0
             if profile:
+                # FP16 only engages on CUDA (no-op on CPU) — label what actually ran.
+                fp16_on = getattr(cfg, "infer_fp16", False) and cfg.device == "cuda"
                 print(format_report(sp_time, iteration=it, device=cfg.device,
-                                    cpu_count=_cpu_count, gpu_name=_gpu_name))
+                                    cpu_count=_cpu_count, gpu_name=_gpu_name, fp16=fp16_on))
             buffer.extend(examples)
             _write_records(records, rec_dir, it)
 
@@ -408,6 +410,11 @@ def main():
                     help="run array-ops self-play on the TORCH engine + MCTS so the whole search "
                          "runs on the GPU (not just the net). Device-agnostic; pair with a big "
                          "--games batch. Opt-in — measure the g/s before relying on it.")
+    ap.add_argument("--fp16", action="store_true",
+                    help="run the self-play net forward in FP16 on CUDA (T4 tensor cores) to cut "
+                         "the net-eval cost — the biggest slice of self-play on the 10x128 net. "
+                         "No-op on CPU. Opt-in: FP16 rounding isn't bit-exact, so measure strength "
+                         "on Edax before trusting it. Pair with --profile to see net_fwd drop.")
     ap.add_argument("--device", default=None, help="override device (cuda/cpu/auto)")
     ap.add_argument("--tensorboard", action="store_true",
                     help="also log to TensorBoard (needs a compatible protobuf)")
@@ -460,6 +467,8 @@ def main():
         cfg.buffer_size = max(1000, round(cfg.buffer_size * ratio))
     if args.selfplay_torch:
         cfg.selfplay_torch = True
+    if args.fp16:
+        cfg.infer_fp16 = True
     if args.sims is not None:
         cfg.sims_selfplay = args.sims
     if args.sims_eval is not None:
@@ -478,6 +487,8 @@ def main():
     eval_note = "eval off" if cfg.eval_every == 0 else f"eval every {cfg.eval_every}"
     sp_backend = "torch-search" if getattr(cfg, "selfplay_torch", False) else (
         "arrayops" if cfg.selfplay_arrayops else "pool")
+    if getattr(cfg, "infer_fp16", False):
+        sp_backend += ",fp16"
     lr_note = (f"lr {cfg.lr:.1e}->{cfg.lr_final:.1e} cosine over {cfg.lr_horizon} iters"
                if cfg.lr_final < cfg.lr and cfg.lr_horizon > 1
                else f"lr {cfg.lr:.1e} constant")
