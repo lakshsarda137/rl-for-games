@@ -69,6 +69,7 @@ FRONTEND_DIR = os.path.join(_HERE, "frontend")
 DATA_DIR = os.path.normpath(os.path.join(_HERE, "..", "data"))
 METRICS_PATH = os.path.join(DATA_DIR, "metrics.jsonl")
 CKPT_DIR = os.path.join(DATA_DIR, "checkpoints")
+EXT_DIR = os.path.join(DATA_DIR, "external_models")   # external RL opponents (*.pth.tar/*.pt)
 MAX_MINIMAX_DEPTH = 8
 MAX_EDAX_LEVEL = 30
 DEFAULT_AZ_SIMS = 120         # MCTS sims/move for the trained net (strength vs. speed)
@@ -184,6 +185,87 @@ def _is_az_spec(spec):
     return spec == "az" or spec.startswith("az:") or spec.startswith("az@")
 
 
+# --- external RL opponents (alpha-zero-general net; see az/external_bot.py) ----
+_EXT_LABEL_RE = re.compile(r"[a-z0-9._-]+")
+_EXT_CACHE = {}   # path -> (mtime, net); loaded once, shared across games (read-only)
+
+
+def list_external_models():
+    """External RL opponents installed in data/external_models (*.pth.tar / *.pt).
+
+    These are other AlphaZero-family nets (e.g. alpha-zero-general's pretrained
+    Othello) you can benchmark against — an RL peer, unlike search-based Edax."""
+    out = []
+    if os.path.isdir(EXT_DIR):
+        for name in sorted(os.listdir(EXT_DIR)):
+            stem = name[:-8] if name.endswith(".pth.tar") else (
+                name[:-3] if name.endswith(".pt") else None)
+            if stem:
+                out.append({"label": stem, "stem": stem})
+    return out
+
+
+def external_model_path(stem):
+    """Resolve an external-model stem to a file in EXT_DIR (traversal-guarded)."""
+    stem = (stem or "").strip().lower()
+    if not stem or ".." in stem or not _EXT_LABEL_RE.fullmatch(stem):
+        raise ValueError(f"bad external model {stem!r}")
+    for ext in (".pth.tar", ".pt"):
+        p = os.path.join(EXT_DIR, stem + ext)
+        if os.path.dirname(os.path.abspath(p)) == os.path.abspath(EXT_DIR) and os.path.isfile(p):
+            return p
+    raise ValueError(f"external model {stem} not found")
+
+
+def _parse_ext_spec(spec):
+    """(sims, stem) from 'extbot', 'extbot:100', 'extbot:100@azg_8x8'. No stem ->
+    the first installed external model."""
+    spec = (spec or "").strip().lower()
+    body = spec[len("extbot"):] if spec.startswith("extbot") else spec
+    stem = None
+    if "@" in body:
+        body, stem = body.split("@", 1)
+    sims = DEFAULT_AZ_SIMS
+    if body.startswith(":") and body[1:]:
+        try:
+            sims = int(body[1:])
+        except ValueError:
+            raise ValueError("extbot sims must be an integer, e.g. 'extbot:200'")
+    sims = max(MIN_AZ_SIMS, min(MAX_AZ_SIMS, sims))
+    if not stem:
+        models = list_external_models()
+        if not models:
+            raise ValueError("no external RL model installed (see data/external_models/)")
+        stem = models[0]["stem"]
+    return sims, stem
+
+
+def _is_ext_spec(spec):
+    spec = (spec or "").strip().lower()
+    return spec == "extbot" or spec.startswith("extbot:") or spec.startswith("extbot@")
+
+
+def _load_azg_cached(path):
+    """Load an external net once, cache by (path, mtime) — shared across games."""
+    from external_bot import load_azg_net
+    mtime = os.path.getmtime(path)
+    cached = _EXT_CACHE.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    net = load_azg_net(path, "cpu")
+    _EXT_CACHE[path] = (mtime, net)
+    return net
+
+
+def _build_ext_player(spec):
+    """Turn an 'extbot' spec into a move fn: the external net driven by OUR MCTS."""
+    from external_bot import azg_player
+    sims, stem = _parse_ext_spec(spec)
+    path = external_model_path(stem)
+    net = _load_azg_cached(path)
+    return azg_player(path, sims, net=net)
+
+
 # Loaded Evaluators cached by (path -> (mtime, evaluator, iteration)). Keying on
 # mtime means that while training is running and overwrites latest.pt, the next
 # game automatically picks up the fresher weights.
@@ -262,6 +344,12 @@ def _make_factory(spec):
         from evaluate import az_player
         label = f"AZ {ckpt}" + (f"·it{it}" if it is not None and ckpt == "latest" else "") + f" · {sims} sims"
         return (lambda rng: az_player(evaluator, sims, rng=rng)), label
+    if _is_ext_spec(spec):
+        from external_bot import azg_player
+        sims, stem = _parse_ext_spec(spec)
+        path = external_model_path(stem)
+        net = _load_azg_cached(path)                    # loaded once, shared across games
+        return (lambda rng: azg_player(path, sims, net=net, rng=rng)), f"RL {stem} · {sims} sims"
     if spec == "random":
         return (lambda rng: (lambda b, p: random_move(b, p, rng))), "random"
     # greedy / minimax:D / edax:L are stateless move fns — build once, share safely.
@@ -389,6 +477,9 @@ def _pretty_label(spec):
         return "Minimax d" + s.split(":")[1]
     if s.startswith("edax"):
         return "Edax L" + (s.split(":")[1] if ":" in s else "6")
+    if _is_ext_spec(s):
+        sims, stem = _parse_ext_spec(s)
+        return f"RL {stem}·{sims}"
     if _is_az_spec(s):
         sims, ck = _parse_az_spec(s)
         if ck == "latest":
@@ -571,6 +662,8 @@ def build_player(spec):
         return edax_mod.edax_player(level)  # raises EdaxNotInstalled if absent
     if _is_az_spec(spec):
         return _build_az_player(spec)       # the trained AlphaZero net (latest or a chosen checkpoint)
+    if _is_ext_spec(spec):
+        return _build_ext_player(spec)      # an external RL net (alpha-zero-general) via our MCTS
     raise ValueError(f"unknown player: {spec!r}")
 
 
@@ -759,6 +852,7 @@ def config():
         "min_az_sims": MIN_AZ_SIMS,
         "max_az_sims": MAX_AZ_SIMS,
         "checkpoints": list_checkpoints() if az_path is not None else [],
+        "external_models": list_external_models(),
         "max_arena_workers": MAX_ARENA_WORKERS,
     }
 

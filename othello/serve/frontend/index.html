@@ -356,6 +356,11 @@ function fillPlayerSelect(sel, { human = true, chosen } = {}) {
     for (const c of config.checkpoints) add("az@" + c.label, "AZ · " + ckptLabelText(c), g);
     sel.appendChild(g);
   }
+  if ((config.external_models || []).length) {
+    const ge = document.createElement("optgroup"); ge.label = "External RL bot";
+    for (const m of config.external_models) add("extbot@" + m.stem, "RL · " + m.label, ge);
+    sel.appendChild(ge);
+  }
   const g2 = document.createElement("optgroup"); g2.label = "Engines & baselines";
   add("minimax", "Minimax", g2);
   if (config.edax_available) add("edax", "Edax", g2);
@@ -411,7 +416,7 @@ async function deleteCkpt(c) {
     refreshCkptSelects(); renderCkptList();
   } catch (e) { alert("Could not delete: " + e.message); }
 }
-function paramKind(t) { return t.startsWith("az@") ? "az" : (t === "minimax" ? "minimax" : (t === "edax" ? "edax" : null)); }
+function paramKind(t) { return (t.startsWith("az@") || t.startsWith("extbot@")) ? "az" : (t === "minimax" ? "minimax" : (t === "edax" ? "edax" : null)); }
 function syncParam(typeSel, paramInput) {
   const k = paramKind(typeSel.value);
   paramInput.hidden = !k;
@@ -426,6 +431,7 @@ function syncParam(typeSel, paramInput) {
 function specOf(typeSel, paramInput) {
   const t = typeSel.value;
   if (t.startsWith("az@")) return "az:" + paramInput.value + "@" + t.slice(3);   // t = "az@<ckpt>"
+  if (t.startsWith("extbot@")) return "extbot:" + paramInput.value + "@" + t.slice(7);  // t = "extbot@<stem>"
   if (t === "minimax") return "minimax:" + paramInput.value;
   if (t === "edax") return "edax:" + paramInput.value;
   return t;
@@ -440,6 +446,10 @@ function prettySpec(spec) {
   if (spec === "greedy") return "Greedy";
   if (spec.startsWith("minimax:")) return "Minimax d" + spec.split(":")[1];
   if (spec.startsWith("edax")) return "Edax L" + (spec.split(":")[1] || "6");
+  if (spec.startsWith("extbot")) {
+    const at = spec.indexOf("@");
+    return "RL " + (at >= 0 ? spec.slice(at + 1) : "bot");
+  }
   if (spec.startsWith("az")) {
     const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest";
     if (ck === "latest") return "AZ latest" + (config.az_iteration != null ? ` (iter ${config.az_iteration})` : "");
@@ -569,6 +579,7 @@ function syncArenaParam() {
 function arenaOppSpec() {
   const t = $("arenaOpp").value, p = $("arenaParam").value;
   if (t.startsWith("az@")) return "az:" + (p || 80) + "@" + t.slice(3);
+  if (t.startsWith("extbot@")) return "extbot:" + (p || 80) + "@" + t.slice(7);
   if (t === "minimax") return "minimax:" + p;
   if (t === "edax") return "edax:" + p;
   return t;

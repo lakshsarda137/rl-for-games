@@ -264,6 +264,24 @@ runnable artifact. See `README.md` for structure.
   parked Torch GPU-search port already showed the search is op-launch/latency-bound (~2 g/s) — C++ native code is
   the manual op-fusion alternative, resume-safe (only changes how games are generated, not the checkpoint).
 
+- **External RL opponent wired in ✅ (2026-07-21) — benchmark vs another AlphaZero, not just Edax.** User wanted
+  to measure against RL PEERS (Edax is search/"brute force"). `az/external_bot.py` vendors alpha-zero-general's
+  Othello PyTorch net (github.com/suragnair/alpha-zero-general, `8x8_100checkpoints_best.pth.tar`) — a standalone
+  copy of their 4-conv+2-FC arch (WIDTH auto-inferred from the checkpoint), a `weights_only`-safe loader, an
+  encoding adapter (their ±1 canonical single-channel board + 65-action `log_softmax`/`tanh` map straight onto OUR
+  convention — same row-major indexing + pass=64 + side-to-move value), and `azg_player` that runs the foreign net
+  through OUR MCTS → a **fair same-search** comparison (same sims/PUCT, only the learned net differs). Backend:
+  new **`extbot` / `extbot:<sims>` / `extbot:<sims>@<stem>`** player spec (`_parse_ext_spec`/`_build_ext_player`,
+  net cached by mtime, traversal-guarded `external_model_path`), wired into `build_player`, the Arena `_make_factory`,
+  `_pretty_label`, and `/api/config` (`external_models`). Frontend: an **"External RL bot"** optgroup in the play /
+  Arena / tournament dropdowns (`index.html` + `tournament.html`). FAST `test_external_azg_bot_plays_legal` pins the
+  whole path with a tiny same-shape net (no download). **Models live in `data/external_models/*.pth.tar` (gitignored).
+  THE ONE REMAINING STEP is the 64MB weight download** (the env's auto-classifier blocks a large curl) — user runs
+  `curl -L -o data/external_models/azg_8x8.pth.tar <repo raw url>` themselves, then it appears as `RL · azg_8x8` in
+  the UI. **Sourcing reality:** only ONE clean external 8×8 PyTorch RL net exists; the repo's other Othello nets are
+  6×6 (wrong size) or Keras/Chainer/TF (protobuf-broken here). For a fuller RL-vs-RL ladder, add your OWN past
+  checkpoints (run1-iter25, run2-iterNN) as extra distinct opponents in the Arena/tournament.
+
 ## Next steps (in likely order)
 
 > **▶ CURRENT PRIORITY (updated 2026-07-21): LR decay is now BUILT ✅ — the top task is to RUN it and MEASURE.**
