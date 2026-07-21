@@ -237,10 +237,20 @@ runnable artifact. See `README.md` for structure.
   policy + an explicit `.float()` on logits/values right after the forward), so the accuracy hit is small.
   Wired into the default array-ops path (`make_net_evaluator(..., fp16=...)`) and the single-position
   `Evaluator`; eval/ladder deliberately stays FP32 for a clean strength read. FAST `test_fp16_flag_is_cpu_noop`
-  pins the CPU no-op. **STILL TO MEASURE (user runs next): the g/s gain (`--kaggle --iterations 2 --fp16
-  --profile`, watch net_fwd shrink) AND that strength holds vs Edax L2 (40+ games) — FP16 rounding is ~1e-3, so
-  confirm it doesn't dent play before baking `infer_fp16=True` into `Config.kaggle()`.** Next cheaper lever after
-  this: trim net_prep (redundant CPU legal-mask recompute + 4 H<->D transfers/call).
+  pins the CPU no-op. **MEASURED on a T4 (2026-07-21): NO speedup — parked as opt-in, do NOT enable.** iter-2
+  net_fwd was 29.8s vs the FP32 30.5s (within noise), g/s 1.3 vs 1.4. **Why: the net forward is launch/latency-
+  bound, NOT compute-bound** — the board is tiny (8x8), so each of ~5670 net calls is dominated by kernel-launch
+  + transfer overhead, not the matmul FP16 speeds up. Tensor cores only help a compute-bound forward. So FP16 is
+  a dead end here (kept off-by-default; harmless). The only thing that amortizes a launch-bound net_fwd is a
+  BIGGER batch (`--games`, call-count is sims x plies, games-independent) — already partly captured at --games 200.
+- **THROUGHPUT VERDICT (settled 2026-07-21): self-play on a T4 is overhead-bound top-to-bottom (~1.4 g/s); stop
+  chasing it.** Both big levers are now MEASURED and neither pays off: **C++ search port ~2.3x ceiling** (net
+  forward is ~40%, un-C++-able) — not worth the build cost; **FP16 net eval ~0x** (net forward is launch-bound).
+  The GPU waits on kernel launches, the CPU waits on Python/NumPy dispatch — no cheap 2x+ exists on this GPU.
+  Only `--games` (bigger batch) amortizes net_fwd, a ~20% effect not a multiplier. **DECISION (user): spend
+  Kaggle hours on ITERATIONS, not throughput** — the bot is still climbing (25%->47% vs Edax L2) and LR decay is
+  the live strength lever. Resume `--kaggle --resume auto --games 200 --sims ~130` and judge on the Edax
+  yardstick (40+ games). Real speedups would need better hardware (A100) or op-fusion — not worth it now.
 - **Self-play PROFILER added ✅ (2026-07-21) — to price a native/C++ MCTS port BEFORE building it.**
   Opt-in `--profile` flag (`az/profiling.py` + guarded hooks in `mcts_batched.make_net_evaluator` and
   `selfplay._play_batch`; zero cost when off, parity tests untouched). Prints a per-iteration self-play
