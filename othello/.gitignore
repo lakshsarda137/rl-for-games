@@ -3,3 +3,11 @@ __pycache__/
 data/
 .DS_Store
 third_party/
+native/*.so
+native/*.pyd
+native/*.dylib
+
+# Private notes (not published to GitHub)
+CLAUDE.md
+DEPLOYMENT.md
+artifacts/

@@ -45,15 +45,31 @@ import torch
 print("CUDA:", torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else "")
 ```
 
-**Cell 3 — smoke run** (2 iters, eval off, weights thrown away — just checks speed):
+**Cell 3 — build the C++ extension** (~20–40s; do this every session, the disk is wiped):
+```python
+!python native/build.py
+```
+This compiles the C++ engine + tree search (`native/README.md`). It is a plain CPU
+`.so` — no LibTorch, no CUDA toolkit — because the network stays in PyTorch behind a
+callback. **Skipping this is safe**: training falls back to NumPy and just runs slower.
+The startup line of every run tells you which engine is live.
+
+**Cell 4 — smoke run** (2 iters, eval off, weights thrown away — just checks speed):
 ```python
 !python -u run/train_loop.py --kaggle --iterations 2 --eval-every 0 --out /kaggle/working/az_smoke
 ```
-Look at the per-iteration `X.X g/s`. Baseline was ~0.4; array-ops hits ~2.1 on a T4.
-(`nvidia-smi` shows modest GPU + a busy CPU — the search math is NumPy on the CPU,
-only the network is on the GPU; that's the known ceiling.)
+Look at the per-iteration `X.X g/s`. Baseline was ~0.4; NumPy array-ops hit ~2.1 on a
+T4; the C++ path should be meaningfully above that. To measure the port's actual
+payoff on YOUR hardware, run it twice and compare the `self-play` totals:
+```python
+!python -u run/train_loop.py --kaggle --iterations 2 --profile --out /kaggle/working/az_smoke
+!python -u run/train_loop.py --kaggle --iterations 2 --profile --no-native --out /kaggle/working/az_smoke
+```
+The profile header says `engine=C++` or `engine=NumPy`, and the NumPy run prints the
+Amdahl ceiling the C++ run should be approaching. Use **iteration 2**, not 1 — the
+first is cold.
 
-**Cell 4 — the real run, with the live W&B dashboard:**
+**Cell 5 — the real run, with the live W&B dashboard:**
 ```python
 !pip install -q wandb                       # if the Kaggle image doesn't have it
 from kaggle_secrets import UserSecretsClient
@@ -85,12 +101,17 @@ Run from the `othello/` dir. `--out /kaggle/working/az_data` keeps outputs toget
 | Bigger/smaller net | add `--net BxC` (default `10x128`; `--net 5x64` = the old quick net) |
 | Tune LR decay | `--lr-final LR` / `--lr-horizon N` (defaults `1e-4` / `160`; LR cosine-decays from `1e-3`). Auto-on; set `--lr-final 1e-3` to disable |
 | Faster net eval | `--fp16` runs the self-play net forward in FP16 on the T4's tensor cores (~43% of self-play is the net). Opt-in; pair with `--profile` to see `net_fwd` drop, then judge strength on Edax |
-| Profile self-play | `--profile` prints a per-iter time breakdown (GPU net-forward vs CPU search) — used to decide if a native/C++ MCTS port is worth it |
+| Profile self-play | `--profile` prints a per-iter time breakdown (GPU net-forward vs CPU search) + the Amdahl ceiling. Header reports `engine=C++` or `engine=NumPy` |
+| A/B the C++ port | `--no-native` forces the NumPy engine + search. Same games either way — run with and without to measure the port on your GPU |
 | More games per iter | add `--games N` (default 96; **also scales train-steps + buffer linearly**, so the extra data is trained on) |
 | GPU search (parked) | `--selfplay-torch --games N` runs the SEARCH on the GPU — measured on a T4, caps ~2 g/s and loses to NumPy at small batch, so NOT recommended there (see the flag note below) |
 
 The flags that matter:
 - **`--kaggle`** — the GPU config: 10×128 net, array-ops self-play, `workers=1`, eval off, 30 iters, `device=cuda`.
+- **`--no-native`** — force the NumPy engine + search even when the C++ extension is built. The two produce
+  **byte-identical games** (`tests/test_native.py` pins it), so this is purely a speed A/B — or a way to rule
+  the port out when chasing a bug. `OTHELLO_NATIVE=0` does the same from the environment. If Cell 3 was
+  skipped or its build failed, you are already on NumPy and the startup line says so.
 - **`--net BxC`** — override the network size (e.g. `--net 5x64` for the old net, `--net 10x128` = default).
   Bigger = stronger ceiling but slower to fill; on **resume** the checkpoint's own architecture wins.
 - **`--games N`** — self-play games per iteration (default 96). **`steps_per_iter` and `buffer_size` now
@@ -188,7 +209,7 @@ It installs the newest checkpoint → `data/checkpoints/latest.pt` and metrics �
 `data/metrics.jsonl`. Then:
 ```bash
 python serve/backend.py     # http://127.0.0.1:8000        : play "AZ net", or Arena for aggregate win rates
-                            # http://127.0.0.1:8000/dashboard : the metric curves
+                            # python run/dashboard.py : the metric curves
 ```
 `pull_kaggle` only sees a **committed** run's output (not an in-progress one) — that
 is exactly why W&B is the live view. (`--dataset <user>/<slug>` instead of `--kernel`
@@ -200,7 +221,7 @@ them for manual download if you'd rather not use the API.
 
 ## Notes
 - **Deps:** Kaggle images ship torch + numpy (no install for training). `--wandb`
-  needs `pip install wandb` (Cell 4 does it). Edax / FastAPI are only for the local app.
+  needs `pip install wandb` (Cell 5 does it). Edax / FastAPI are only for the local app.
 - **On a GPU keep `workers=1`.** `--workers >1` makes processes contend for the one
   shared GPU and is *slower* (measured 2.1→1.3 g/s at 4 workers on a T4); it only
   helps a `--device cpu` run. `--kaggle` already sets `workers=1`.

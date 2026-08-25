@@ -131,6 +131,7 @@
     padding-right: 30px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right 11px center;
   }
   input.num { flex: 0 0 60px; width: 60px; text-align: center; padding: 0 8px; }
+  select.lvl { flex: 0 0 116px; }
 
   input[type=range] { -webkit-appearance: none; appearance: none; flex: 1; height: 6px; border-radius: 999px; background: var(--line); accent-color: var(--primary); }
   input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
@@ -214,12 +215,11 @@
       <span class="mark"></span>
       <div>
         <h1>Othello</h1>
-        <p class="tagline">Play the AlphaZero net, Minimax, or Edax — or watch bots battle.</p>
+        <p class="tagline">Play against our AI, or watch two computer players play each other.</p>
       </div>
     </div>
-    <div style="display:flex; gap:8px; flex-wrap:wrap">
-      <a class="link-btn" href="/tournament">🏆 Tournament</a>
-      <a class="link-btn" href="/dashboard">📊 Training dashboard</a>
+    <div id="devLinks" style="display:flex; gap:8px; flex-wrap:wrap" hidden>
+      <a class="link-btn" href="/tournament?dev">🏆 Tournament</a>
     </div>
   </header>
 
@@ -231,7 +231,7 @@
         <div class="team" id="teamWhite"><span class="disc-ico white"></span><span class="team-meta"><span class="team-name">White</span><span class="team-who" id="whoWhite"></span></span><span class="count" id="nWhite">2</span></div>
       </div>
       <div class="board" id="board" role="grid" aria-label="Othello board, 8 by 8"></div>
-      <div class="status" id="status" role="status" aria-live="polite">Choose players, then press New Game.</div>
+      <div class="status" id="status" role="status" aria-live="polite">Press New Game to start. You play Black and move first.</div>
     </section>
 
     <!-- controls -->
@@ -242,24 +242,24 @@
           <label for="blackType">Black</label>
           <div class="controls">
             <select id="blackType" aria-label="Black player"></select>
-            <input type="number" id="blackParam" class="num" min="1" max="30" value="1" aria-label="Black difficulty">
+            <select id="blackLevel" class="lvl" aria-label="Black difficulty"></select>
           </div>
         </div>
         <div class="field">
           <label for="whiteType">White</label>
           <div class="controls">
             <select id="whiteType" aria-label="White player"></select>
-            <input type="number" id="whiteParam" class="num" min="1" max="30" value="4" aria-label="White difficulty">
+            <select id="whiteLevel" class="lvl" aria-label="White difficulty"></select>
           </div>
         </div>
         <button class="btn primary block mt" id="newBtn">New Game</button>
       </div>
 
       <div class="card">
-        <h2>Playback <span class="note">for bot turns</span></h2>
+        <h2>Playback <span class="note">for computer turns</span></h2>
         <div class="field">
           <label for="speed">Speed</label>
-          <div class="controls"><input type="range" id="speed" min="0" max="1500" step="100" value="500" aria-label="Delay between bot moves"></div>
+          <div class="controls"><input type="range" id="speed" min="0" max="1500" step="100" value="500" aria-label="Pause between computer moves"></div>
         </div>
         <div class="btn-row">
           <button class="btn" id="pauseBtn">Pause</button>
@@ -267,6 +267,7 @@
         </div>
       </div>
 
+      <!-- developer tools: only shown with ?dev in the URL -->
       <div class="card" id="arenaBox" hidden>
         <h2>Arena <span class="note">AZ vs opponent · parallel</span></h2>
         <div class="field">
@@ -305,7 +306,7 @@
     </aside>
   </main>
 
-  <!-- arena live spectate (full width) -->
+  <!-- arena live spectate (full width; developer tool) -->
   <section class="card arena" id="arenaLive" hidden>
     <div class="arena-top">
       <h2 class="arena-title">Arena — <span id="alChampion">AZ</span><span class="vs">vs</span><span id="alOpp">opponent</span></h2>
@@ -331,16 +332,34 @@
 const $ = id => document.getElementById(id);
 const BLACK = 1, WHITE = -1, PASS = 64;
 let gameId = null, state = null, paused = false, busy = false, config = {};
+// Developer mode (?dev in the URL) reveals the Arena / Models / Tournament tools and
+// lists every saved version of our AI. Regular visitors see one "Our AI" entry and
+// word-based difficulty levels; no engine numbers anywhere.
+const DEV = new URLSearchParams(location.search).has("dev");
+
+// ---------- difficulty levels ----------
+// Each level maps to the engine's real knob (search effort for our AI, search depth
+// for Minimax, Edax level). Players never see the numbers.
+const LEVELS = ["Easy", "Medium", "Hard", "Expert"];
+const DEFAULT_LEVEL = 1;   // Medium
+const LEVEL_PARAMS = {
+  az:      [10, 40, 120, 400],   // MCTS simulations per move
+  extbot:  [10, 40, 120, 400],
+  minimax: [1, 2, 4, 5],         // search depth (plies)
+  edax:    [1, 4, 10, 21],       // Edax level
+};
+const NAMES = { human: "Human", random: "Random", greedy: "Greedy", minimax: "Minimax", edax: "Edax" };
 
 // ---------- player selects ----------
-// Every AZ checkpoint is its OWN option (value "az@<label>"), so there is one
-// dropdown per player and no separate "which checkpoint" filter. The type value
-// fully identifies the player; the number box is its parameter (sims / depth / level).
 function ckptLabelText(c) {
   if (c.is_latest) return `latest · iter ${c.iteration ?? "?"}`;
-  const m = c.label.match(/^(.+)-iter0*(\d+)$/);   // archived pull "<run>-iter<NN>" -> show the run
+  const m = c.label.match(/^(.+)-iter0*(\d+)$/);
   if (m) return `${m[1]} · iter ${m[2]}`;
   return c.iteration != null ? `iter ${c.iteration}` : c.label;
+}
+function latestCkpt() {
+  const list = config.checkpoints || [];
+  return list.find(c => c.is_latest) || list[0] || null;
 }
 function fillPlayerSelect(sel, { human = true, chosen } = {}) {
   if (!sel) return;
@@ -352,21 +371,32 @@ function fillPlayerSelect(sel, { human = true, chosen } = {}) {
   };
   if (human) add("human", "Human");
   if (config.az_available && (config.checkpoints || []).length) {
-    const g = document.createElement("optgroup"); g.label = "AlphaZero net";
-    for (const c of config.checkpoints) add("az@" + c.label, "AZ · " + ckptLabelText(c), g);
-    sel.appendChild(g);
+    if (DEV) {
+      const g = document.createElement("optgroup"); g.label = "Our AI (every saved version)";
+      for (const c of config.checkpoints) add("az@" + c.label, "Our AI · " + ckptLabelText(c), g);
+      sel.appendChild(g);
+    } else {
+      add("az@" + latestCkpt().label, "Our AI");
+    }
   }
-  if ((config.external_models || []).length) {
+  if (DEV && (config.external_models || []).length) {
     const ge = document.createElement("optgroup"); ge.label = "External RL bot";
     for (const m of config.external_models) add("extbot@" + m.stem, "RL · " + m.label, ge);
     sel.appendChild(ge);
   }
-  const g2 = document.createElement("optgroup"); g2.label = "Engines & baselines";
-  add("minimax", "Minimax", g2);
-  if (config.edax_available) add("edax", "Edax", g2);
+  const g2 = document.createElement("optgroup"); g2.label = "Other computer players";
+  if (config.edax_available) add("edax", "Edax (strong engine)", g2);
+  add("minimax", "Minimax (classic search)", g2);
+  add("greedy", "Greedy (takes the most discs)", g2);
   add("random", "Random", g2);
-  add("greedy", "Greedy", g2);
   sel.appendChild(g2);
+}
+function fillLevelSelect(sel) {
+  sel.innerHTML = "";
+  LEVELS.forEach((name, i) => {
+    const o = document.createElement("option"); o.value = i; o.textContent = name;
+    if (i === DEFAULT_LEVEL) o.selected = true; sel.appendChild(o);
+  });
 }
 // The Arena AZ champion is always AZ, so its dropdown is checkpoint-only.
 function fillCkptSelect(sel) {
@@ -380,13 +410,13 @@ function fillCkptSelect(sel) {
 function refreshCkptSelects() {
   const keep = (sel, fill) => {
     if (!sel) return; const cur = sel.value; fill(sel);
-    if ([...sel.options].some(o => o.value === cur)) sel.value = cur;   // keep selection if it survived
+    if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
   };
   keep($("blackType"), s => fillPlayerSelect(s, { human: true }));
   keep($("whiteType"), s => fillPlayerSelect(s, { human: true }));
   keep($("arenaOpp"), s => fillPlayerSelect(s, { human: false }));
   keep($("arenaChampCkpt"), fillCkptSelect);
-  syncParam($("blackType"), $("blackParam")); syncParam($("whiteType"), $("whiteParam"));
+  syncLevel($("blackType"), $("blackLevel")); syncLevel($("whiteType"), $("whiteLevel"));
   if ($("arenaOpp")) syncArenaParam();
   updateWho();
 }
@@ -416,54 +446,46 @@ async function deleteCkpt(c) {
     refreshCkptSelects(); renderCkptList();
   } catch (e) { alert("Could not delete: " + e.message); }
 }
-function paramKind(t) { return (t.startsWith("az@") || t.startsWith("extbot@")) ? "az" : (t === "minimax" ? "minimax" : (t === "edax" ? "edax" : null)); }
-function syncParam(typeSel, paramInput) {
-  const k = paramKind(typeSel.value);
-  paramInput.hidden = !k;
-  if (k === "minimax") { paramInput.min = 1; paramInput.max = config.max_minimax_depth || 8; paramInput.title = "search depth"; if (+paramInput.value > paramInput.max || +paramInput.value < 1) paramInput.value = 4; }
-  else if (k === "edax") { paramInput.min = 0; paramInput.max = config.max_edax_level || 30; paramInput.title = "Edax level"; if (+paramInput.value > paramInput.max) paramInput.value = 6; }
-  else if (k === "az") {
-    paramInput.min = config.min_az_sims || 10; paramInput.max = config.max_az_sims || 1000;
-    paramInput.title = "MCTS sims/move — higher = stronger, slower";
-    if (+paramInput.value < paramInput.min || +paramInput.value > paramInput.max) paramInput.value = config.default_az_sims || 120;
-  }
+function paramKind(t) { return t.startsWith("az@") ? "az" : t.startsWith("extbot@") ? "extbot" : (t === "minimax" || t === "edax") ? t : null; }
+// Show the difficulty picker only for players that have one.
+function syncLevel(typeSel, levelSel) { levelSel.hidden = !paramKind(typeSel.value); }
+function specOf(typeSel, levelSel) {
+  const t = typeSel.value, k = paramKind(t);
+  if (!k) return t;
+  const n = LEVEL_PARAMS[k][+levelSel.value] ?? LEVEL_PARAMS[k][DEFAULT_LEVEL];
+  if (k === "az") return "az:" + n + "@" + t.slice(3);
+  if (k === "extbot") return "extbot:" + n + "@" + t.slice(7);
+  return k + ":" + n;
 }
-function specOf(typeSel, paramInput) {
-  const t = typeSel.value;
-  if (t.startsWith("az@")) return "az:" + paramInput.value + "@" + t.slice(3);   // t = "az@<ckpt>"
-  if (t.startsWith("extbot@")) return "extbot:" + paramInput.value + "@" + t.slice(7);  // t = "extbot@<stem>"
-  if (t === "minimax") return "minimax:" + paramInput.value;
-  if (t === "edax") return "edax:" + paramInput.value;
-  return t;
+// Backend spec string -> short human label for the scoreboard ("Our AI · Hard").
+function levelWord(kind, n) {
+  const i = (LEVEL_PARAMS[kind] || []).indexOf(+n);
+  return i >= 0 ? LEVELS[i] : (DEV ? String(n) : "");
 }
-// Turn a backend spec string into a short human label — so a game/scoreboard shows
-// WHICH agent (and which AZ checkpoint) is playing, not a raw "az:80@iter0007".
+function withLevel(name, kind, n) { const w = levelWord(kind, n); return w ? `${name} · ${w}` : name; }
 function prettySpec(spec) {
   spec = (spec || "").toLowerCase();
   if (!spec) return "";
-  if (spec === "human") return "Human";
-  if (spec === "random") return "Random";
-  if (spec === "greedy") return "Greedy";
-  if (spec.startsWith("minimax:")) return "Minimax d" + spec.split(":")[1];
-  if (spec.startsWith("edax")) return "Edax L" + (spec.split(":")[1] || "6");
-  if (spec.startsWith("extbot")) {
-    const at = spec.indexOf("@");
-    return "RL " + (at >= 0 ? spec.slice(at + 1) : "bot");
-  }
+  if (spec in NAMES) return NAMES[spec];
+  if (spec.startsWith("minimax:")) return withLevel("Minimax", "minimax", spec.split(":")[1]);
+  if (spec.startsWith("edax")) return withLevel("Edax", "edax", spec.split(":")[1] || "6");
+  const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest";
+  const num = (spec.split("@")[0].split(":")[1]) || "";
+  if (spec.startsWith("extbot")) return withLevel("RL " + (at >= 0 ? ck : "bot"), "extbot", num);
   if (spec.startsWith("az")) {
-    const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest";
-    if (ck === "latest") return "AZ latest" + (config.az_iteration != null ? ` (iter ${config.az_iteration})` : "");
-    const r = ck.match(/^(.+)-iter0*(\d+)$/);      // "<run>-iter<NN>" -> include the run
-    if (r) return `AZ ${r[1]} · iter ${r[2]}`;
-    const m = ck.match(/iter0*(\d+)/);
-    return m ? "AZ iter " + m[1] : "AZ " + ck;
+    let name = "Our AI";
+    if (DEV) {
+      if (ck === "latest") name += config.az_iteration != null ? ` (iter ${config.az_iteration})` : "";
+      else { const r = ck.match(/^(.+)-iter0*(\d+)$/); const m = ck.match(/iter0*(\d+)/);
+             name += r ? ` ${r[1]} · iter ${r[2]}` : m ? ` iter ${m[1]}` : ` ${ck}`; }
+    }
+    return withLevel(name, "az", num);
   }
   return spec;
 }
-// Show each colour's player under its name (from the live game, or the pending picks).
 function updateWho() {
-  const bs = (gameId && state) ? state.black_spec : specOf($("blackType"), $("blackParam"));
-  const ws = (gameId && state) ? state.white_spec : specOf($("whiteType"), $("whiteParam"));
+  const bs = (gameId && state) ? state.black_spec : specOf($("blackType"), $("blackLevel"));
+  const ws = (gameId && state) ? state.white_spec : specOf($("whiteType"), $("whiteLevel"));
   if ($("whoBlack")) $("whoBlack").textContent = prettySpec(bs);
   if ($("whoWhite")) $("whoWhite").textContent = prettySpec(ws);
 }
@@ -495,7 +517,7 @@ function render() {
     if (v === BLACK) { c.innerHTML = '<span class="disc black"></span>'; label += "black disc"; }
     else if (v === WHITE) { c.innerHTML = '<span class="disc white"></span>'; label += "white disc"; }
     else label += "empty";
-    if (legal.has(i)) { c.classList.add("legal", "playable"); label += ", legal move — press to play"; }
+    if (legal.has(i)) { c.classList.add("legal", "playable"); label += ", legal move, press to play"; }
     if (i === s.last_move) c.classList.add("last");
     c.setAttribute("aria-label", label);
     c.disabled = !(s.current_is_human && legal.has(i));
@@ -515,10 +537,10 @@ function renderStatus() {
       : `<b>${s.result === BLACK ? "Black" : "White"} wins</b> · ${s.black_count}–${s.white_count}`;
     return;
   }
-  if (!gameId) { st.textContent = "Choose players, then press New Game."; return; }
+  if (!gameId) { st.textContent = "Press New Game to start. You play Black and move first."; return; }
   const who = s.current_name, spec = s.player === BLACK ? s.black_spec : s.white_spec;
-  if (s.must_pass) { st.innerHTML = `<b>${who}</b> must pass — no legal move`; return; }
-  if (s.current_is_human) { st.innerHTML = `<b>${who}</b> to move — your turn`; return; }
+  if (s.must_pass) { st.innerHTML = `<b>${who}</b> has no legal move and must pass`; return; }
+  if (s.current_is_human) { st.innerHTML = `<b>${who}</b> to move. Your turn.`; return; }
   st.innerHTML = `<span class="thinking"><i></i><i></i><i></i></span><b>${who}</b> thinking… <span class="muted">(${prettySpec(spec)})</span>`;
 }
 
@@ -531,8 +553,8 @@ async function api(path, body) {
 async function newGame() {
   try {
     const res = await api("/api/new", {
-      black: specOf($("blackType"), $("blackParam")),
-      white: specOf($("whiteType"), $("whiteParam")) });
+      black: specOf($("blackType"), $("blackLevel")),
+      white: specOf($("whiteType"), $("whiteLevel")) });
     gameId = res.game_id; state = res.state; paused = false; $("pauseBtn").textContent = "Pause";
     render(); tick();
   } catch (e) { $("status").textContent = "Could not start: " + e.message; }
@@ -560,8 +582,8 @@ $("newBtn").addEventListener("click", newGame);
 $("pauseBtn").addEventListener("click", () => { paused = !paused; $("pauseBtn").textContent = paused ? "Resume" : "Pause"; if (!paused) tick(); });
 $("stepBtn").addEventListener("click", () => { if (state && !state.current_is_human && !state.done) botMove(); });
 for (const side of ["black", "white"]) {
-  $(side + "Type").addEventListener("change", () => { syncParam($(side + "Type"), $(side + "Param")); updateWho(); });
-  $(side + "Param").addEventListener("input", updateWho);   // keep the scoreboard identity live before a game
+  $(side + "Type").addEventListener("change", () => { syncLevel($(side + "Type"), $(side + "Level")); updateWho(); });
+  $(side + "Level").addEventListener("change", updateWho);   // keep the scoreboard identity live before a game
 }
 
 // ---------- arena ----------
@@ -683,30 +705,34 @@ async function arenaControl(action) {
 (async function init() {
   buildBoard(); state = previewState(); render();
   config = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
+  fillLevelSelect($("blackLevel")); fillLevelSelect($("whiteLevel"));
+  // Default match: you (Black) against our AI (White). Fall back to Minimax if no model is loaded.
+  const ai = (config.az_available && latestCkpt()) ? "az@" + latestCkpt().label : "minimax";
   fillPlayerSelect($("blackType"), { human: true, chosen: "human" });
-  fillPlayerSelect($("whiteType"), { human: true, chosen: "minimax" });
-  syncParam($("blackType"), $("blackParam"));
-  syncParam($("whiteType"), $("whiteParam"));
+  fillPlayerSelect($("whiteType"), { human: true, chosen: ai });
+  syncLevel($("blackType"), $("blackLevel"));
+  syncLevel($("whiteType"), $("whiteLevel"));
   render();
-  if (config.az_available) {
-    $("arenaBox").hidden = false;
-    $("arenaSims").value = config.default_az_sims ? Math.min(80, config.default_az_sims) : 80;
-    $("arenaWorkers").max = config.max_arena_workers || 8;
-    fillCkptSelect($("arenaChampCkpt"));
-    fillArenaOpp();
-    $("arenaOpp").addEventListener("change", syncArenaParam);
-    $("arenaBtn").addEventListener("click", startArena);
-    $("alPause").addEventListener("click", () => arenaControl($("alPause").textContent === "Pause" ? "pause" : "resume"));
-    $("alStop").addEventListener("click", () => arenaControl("stop"));
-    $("modelsBox").hidden = false; renderCkptList();
+  if (DEV) {
+    $("devLinks").hidden = false;
+    if (config.az_available) {
+      $("arenaBox").hidden = false;
+      $("arenaSims").value = config.default_az_sims ? Math.min(80, config.default_az_sims) : 80;
+      $("arenaWorkers").max = config.max_arena_workers || 8;
+      fillCkptSelect($("arenaChampCkpt"));
+      fillArenaOpp();
+      $("arenaOpp").addEventListener("change", syncArenaParam);
+      $("arenaBtn").addEventListener("click", startArena);
+      $("alPause").addEventListener("click", () => arenaControl($("alPause").textContent === "Pause" ? "pause" : "resume"));
+      $("alStop").addEventListener("click", () => arenaControl("stop"));
+      $("modelsBox").hidden = false; renderCkptList();
+    }
   }
   const hints = [];
   hints.push(config.az_available
-    ? `AZ net loaded — each checkpoint is its own option in the player menus; the number box is MCTS sims/move.`
-    : "No trained model yet — run training to play the AZ net here.");
-  hints.push(config.edax_available
-    ? "Edax is installed — try White = Edax (even level 1–2 is very strong)."
-    : "Edax not installed (optional) — see opponents/EDAX_SETUP.md.");
+    ? "Our AI learned Othello by playing against itself. Pick a difficulty next to a player; harder levels think longer before each move."
+    : "Our AI is not loaded on this server, so the computer players are Minimax, Greedy and Random.");
+  if (config.edax_available) hints.push("Edax is a world-class Othello program. Even its Easy level is a serious challenge.");
   $("edaxHint").innerHTML = hints.join("<br>");
 })();
 </script>

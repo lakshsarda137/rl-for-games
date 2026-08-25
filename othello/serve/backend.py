@@ -7,16 +7,15 @@ moves — this file only wires them to HTTP.
 
 Endpoints:
   GET  /                     -> the single-page frontend
-  GET  /dashboard            -> the training-metrics dashboard (reads data/metrics.jsonl)
   GET  /api/config           -> capabilities (is Edax installed, limits)
-  GET  /api/metrics          -> training metrics rows (one per iteration) for the dashboard
   POST /api/new {black,white}-> start a game, return its id + state
   POST /api/move {id, move}  -> apply a HUMAN move (a square 0-63, or 64=pass)
   POST /api/bot_move {id}    -> let the side-to-move BOT choose + play one move
   POST /api/arena {...}      -> start an N-game AZ-vs-opponent match (parallel, spectate-able)
   GET  /api/arena/{id}       -> poll a match: tally + per-game live boards
   POST /api/arena/{id}/control {action} -> pause | resume | stop the match
-  POST /api/checkpoints/delete {label}  -> soft-delete a checkpoint (move to _trash)
+  POST /api/checkpoints/delete {label}  -> soft-delete a checkpoint (move to _trash);
+                                           refused (403) when OTHELLO_READONLY=1 (public deploys)
   GET  /tournament                      -> round-robin tournament page
   POST /api/tournament {players,...}    -> start a round-robin (>=2 bots), points table
   GET  /api/tournament/{id}             -> poll: standings + live matches/games
@@ -67,7 +66,6 @@ from simple import _random_opening, greedy_move, random_move
 
 FRONTEND_DIR = os.path.join(_HERE, "frontend")
 DATA_DIR = os.path.normpath(os.path.join(_HERE, "..", "data"))
-METRICS_PATH = os.path.join(DATA_DIR, "metrics.jsonl")
 CKPT_DIR = os.path.join(DATA_DIR, "checkpoints")
 EXT_DIR = os.path.join(DATA_DIR, "external_models")   # external RL opponents (*.pth.tar/*.pt)
 MAX_MINIMAX_DEPTH = 8
@@ -277,6 +275,13 @@ def load_az_evaluator(path):
     play server still runs for the non-AZ bots even without torch present."""
     import torch
     from network import Evaluator, OthelloNet
+
+    # Flush subnormal floats to zero. The net emits some denormals, and x86 CPUs
+    # (e.g. the Xeons behind AWS Fargate) handle those through microcode assists —
+    # measured 80ms vs 3.6ms per batch-1 forward, i.e. 18s vs 0.8s per 120-sim move.
+    # Apple Silicon flushes by default, so this is invisible on a Mac. No-op if the
+    # platform doesn't support it.
+    torch.set_flush_denormal(True)
 
     mtime = os.path.getmtime(path)
     cached = _AZ_CACHE.get(path)
@@ -618,23 +623,6 @@ def _trim_tourneys():
         _TOURNEY_PRIV.pop(k, None)
 
 
-def read_metrics(path=METRICS_PATH):
-    """Parse data/metrics.jsonl into a list of per-iteration dicts (skip bad lines)."""
-    rows = []
-    if not os.path.isfile(path):
-        return rows
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue  # a half-written last line during a live run — ignore
-    rows.sort(key=lambda r: r.get("iter", 0))
-    return rows
-
 app = FastAPI(title="Othello")
 _GAMES = {}
 
@@ -754,19 +742,9 @@ def index():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
 
-@app.get("/dashboard")
-def dashboard():
-    return FileResponse(os.path.join(FRONTEND_DIR, "dashboard.html"))
-
-
 @app.get("/tournament")
 def tournament_page():
     return FileResponse(os.path.join(FRONTEND_DIR, "tournament.html"))
-
-
-@app.get("/api/metrics")
-def metrics():
-    return {"rows": read_metrics()}
 
 
 @app.post("/api/arena")
@@ -918,6 +896,8 @@ def tournament_control(job_id: str, req: ArenaControl):
 def delete_checkpoint(req: DeleteCkptReq):
     """Remove a checkpoint the user picked — SOFT delete: the .pt is MOVED to
     CKPT_DIR/_trash (recoverable), never hard-deleted. Returns the fresh list."""
+    if os.environ.get("OTHELLO_READONLY", "0") == "1":
+        raise HTTPException(403, "checkpoint management is disabled on this server")
     try:
         path = checkpoint_path(req.label)          # validates existence + path safety
     except ValueError as exc:

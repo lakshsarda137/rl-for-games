@@ -13,6 +13,12 @@ iteration into:
     per_move_ops   apply_moves, masks, move sampling (NumPy CPU) (C++ TARGET)
     postproc       x8 augmentation + example/record building     (C++ TARGET)
 
+The port that measurement justified now EXISTS (`native/othello_native.cpp`), and
+the header line reports which engine produced the buckets. Run it both ways —
+`--profile` and `--profile --no-native` — to see the predicted ceiling next to
+the delivered speed-up. `postproc` is deliberately still NumPy on both paths, so
+it stays in the residual either way.
+
 Timing is GPU-correct: `PROF.sync()` (torch.cuda.synchronize) brackets the forward so
 async kernels are attributed to net_fwd, not to whatever CPU code ran next. The
 instrumentation lives in `mcts_batched.make_net_evaluator` (net_fwd/net_prep) and
@@ -91,6 +97,11 @@ def format_report(sp_total, iteration=None, device="cpu", cpu_count=None,
     if gpu_name:
         facts += f"  gpu={gpu_name}"
     facts += f"  inference={'FP16' if fp16 else 'FP32'}"
+    try:                                    # which engine produced these buckets
+        import native
+        facts += f"  engine={'C++' if native.enabled() else 'NumPy'}"
+    except ImportError:
+        pass
     lines.append(f"  {facts}")
     lines.append("-" * 64)
     lines.append(f"  {'bucket':<16}{'seconds':>10}{'  share':>9}   {'speed-up-able?'}")

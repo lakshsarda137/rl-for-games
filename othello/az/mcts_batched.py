@@ -20,6 +20,13 @@ Semantics are identical to `mcts.py` (verified in `tests/test_batched.py`):
 The evaluator is injected as `evaluate(boards, players) -> (priors[k,65], values[k])`
 so tests can feed a bit-exact single-board evaluator (making the batched search
 identical to serial) while production feeds the true batched network call.
+
+That injected evaluator is also what let this search be ported to C++ cheaply:
+`run_batched` now routes to `native/othello_native.cpp` when the extension is
+built, and the C++ loop calls BACK into Python through the same `evaluate` seam
+once per simulation step — so the network stays in PyTorch and the port needs no
+LibTorch. The NumPy version below stays as the reference implementation and the
+parity oracle (`tests/test_native.py`). Set `OTHELLO_NATIVE=0` to force it.
 """
 
 import os
@@ -31,6 +38,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "engine"))
 
 import board_batched as bb
+import native
 from encode import POLICY_SIZE
 
 _NEG_INF = -1e30
@@ -54,14 +62,25 @@ def _select_actions(P, N, W, legal, c_puct):
     return scores.argmax(1)
 
 
+def _dirichlet_noise(lmask, cfg, rng):
+    """Normalised Dirichlet noise over each game's legal actions (`[B,65]` float32).
+
+    Split out of `_add_dirichlet` so the C++ path can reuse it VERBATIM. This is
+    the only place the search touches `rng`, and its normaliser is the only float
+    reduction in the search whose result depends on summation order — keeping it
+    in NumPy on both paths means the two agree by construction instead of by
+    luck, and nothing has to reproduce PCG64's gamma stream in C++."""
+    g = (rng.gamma(cfg.dirichlet_alpha, 1.0, size=lmask.shape).astype(np.float32) * lmask)
+    s = g.sum(1, keepdims=True)
+    return np.divide(g, s, out=np.zeros_like(g), where=s > 0)
+
+
 def _add_dirichlet(P, legal, node, cfg, rng):
     """Mix root Dirichlet noise over legal actions (per game). Terminal roots have
     no legal actions, so their priors are left untouched."""
     lmask = legal[:, node]
-    alpha, eps = cfg.dirichlet_alpha, cfg.dirichlet_eps
-    g = (rng.gamma(alpha, 1.0, size=lmask.shape).astype(np.float32) * lmask)
-    s = g.sum(1, keepdims=True)
-    noise = np.divide(g, s, out=np.zeros_like(g), where=s > 0)
+    eps = cfg.dirichlet_eps
+    noise = _dirichlet_noise(lmask, cfg, rng)
     P[:, node] = np.where(lmask, (1.0 - eps) * P[:, node] + eps * noise, P[:, node])
 
 
@@ -88,7 +107,58 @@ def _eval_into(gidx, nidx, boards, players, evaluate, P, legal,
 
 def run_batched(boards, players, sims, evaluate, cfg, rng=None, add_noise=True):
     """Search B games for `sims` simulations each. Returns
-    (visit_counts [B,65] float32, root_value [B] float32)."""
+    (visit_counts [B,65] float32, root_value [B] float32).
+
+    Routes to the C++ port when `native/` is built, else to the NumPy reference
+    below. The two are bit-identical, not merely close: `tests/test_native.py`
+    pins them against each other AND against the serial `mcts.py` oracle, with
+    and without root noise."""
+    if native.enabled():
+        return _run_batched_native(boards, players, sims, evaluate, cfg, rng, add_noise)
+    return _run_batched_numpy(boards, players, sims, evaluate, cfg, rng, add_noise)
+
+
+def _root_legal(boards, players):
+    """The root node's legal-action mask exactly as `_eval_into` leaves it: the
+    position's legal actions, and all-False for a terminal root (never expanded).
+    Needed on the C++ path to shape the Dirichlet draw the same way."""
+    lmask = bb.legal_action_masks(boards, players) > 0
+    lmask[bb.is_terminal(boards)] = False
+    return lmask
+
+
+def _run_batched_native(boards, players, sims, evaluate, cfg, rng, add_noise):
+    """C++ search. Python keeps the two order-sensitive float reductions:
+
+      * the root Dirichlet noise (drawn + normalised here, passed in), and
+      * root_value = W.sum(1) / N.sum(1), finished here from the raw root rows.
+
+    Everything between them — select, expand, backup, and the game rules — runs
+    in `native/othello_native.cpp`, calling back into `evaluate` once per sim
+    step just as the NumPy loop does.
+
+    Drawing the noise BEFORE entering C++ (the NumPy path draws it just after the
+    root eval) leaves the RNG stream identical, because `evaluate` never consumes
+    `rng` — the net is deterministic given its weights."""
+    boards = np.ascontiguousarray(boards, dtype=np.int8)
+    players = np.ascontiguousarray(players, dtype=np.int8)
+    noise = None
+    if add_noise:
+        rng = rng or np.random.default_rng()
+        noise = _dirichlet_noise(_root_legal(boards, players), cfg, rng)
+
+    counts, w_root = native.NATIVE.run_batched(
+        boards, players, int(sims), evaluate,
+        float(cfg.c_puct), float(cfg.dirichlet_eps), noise)
+
+    total = counts.sum(1)
+    root_value = np.divide(w_root.sum(1), total,
+                           out=np.zeros(len(counts), np.float32), where=total > 0)
+    return counts, root_value
+
+
+def _run_batched_numpy(boards, players, sims, evaluate, cfg, rng=None, add_noise=True):
+    """The NumPy reference search (see the module docstring). Kept as the oracle."""
     boards = np.ascontiguousarray(boards, dtype=np.int8)
     players = np.asarray(players, dtype=np.int8)
     rng = rng or np.random.default_rng()

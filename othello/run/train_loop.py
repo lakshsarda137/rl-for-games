@@ -24,6 +24,7 @@ for _p in ("engine", "opponents", "az"):
     sys.path.insert(0, os.path.join(_HERE, "..", _p))
 sys.path.insert(0, _HERE)
 
+import native
 from config import Config
 from evaluate import ladder_eval
 from network import Evaluator, OthelloNet
@@ -433,6 +434,10 @@ def main():
                     help="print a per-iteration self-play time breakdown (GPU net-forward "
                          "vs CPU search/rules) to measure the potential native/C++ MCTS "
                          "speed-up. Instruments the default NumPy array-ops path.")
+    ap.add_argument("--no-native", action="store_true",
+                    help="force the NumPy engine + search even when the C++ extension "
+                         "(native/) is built. Same games either way — use it to A/B the "
+                         "speed-up, or to rule the port out when chasing a bug.")
     ap.add_argument("--resume", default=None, metavar="CKPT",
                     help="continue from a checkpoint: a path, or 'auto'/'latest' for "
                          "the newest in <out>/checkpoints. --iterations is then how "
@@ -483,6 +488,8 @@ def main():
         cfg.device = args.device
     if args.eval_every is not None:
         cfg.eval_every = args.eval_every
+    if args.no_native:
+        native.set_enabled(False)
     verb = "more iterations (resume)" if args.resume else "iterations"
     eval_note = "eval off" if cfg.eval_every == 0 else f"eval every {cfg.eval_every}"
     sp_backend = "torch-search" if getattr(cfg, "selfplay_torch", False) else (
@@ -497,6 +504,7 @@ def main():
           f"{cfg.games_per_iter} games/iter, {cfg.sims_selfplay} self-play sims "
           f"({sp_backend}), {cfg.steps_per_iter} train steps/iter, "
           f"buffer {cfg.buffer_size}, {lr_note}, {eval_note}")
+    print(f"          {native.status()}")
     train(cfg, out_dir=args.out, use_tb=args.tensorboard, resume=args.resume,
           use_wandb=args.wandb, wandb_project=args.wandb_project, wandb_run=args.wandb_run,
           wandb_ckpt_every=args.wandb_ckpt_every, profile=args.profile)

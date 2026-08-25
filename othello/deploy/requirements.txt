@@ -1,0 +1,8 @@
+# Runtime deps for the play server (CPU-only torch; see Dockerfile --index-url)
+numpy==1.26.4
+torch==2.1.2
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.12.0
+boto3>=1.34
+pybind11>=2.11

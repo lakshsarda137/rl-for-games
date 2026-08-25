@@ -13,10 +13,19 @@ WHITE=-1); `boards` is int8 `[B, 8, 8]`; `players` is int8 `[B]` (+1/-1); a squa
 action is `row*8+col` (0..63) and PASS is 64 (the encode.py convention). Move
 generation and flipping use the standard directional "flood" (shift-and-mask over
 the 8 straight-line directions), which is branchless and vectorises cleanly.
+
+TWO IMPLEMENTATIONS live here. The `_np_*` functions below are the NumPy
+reference — the readable definition of the rules, and the oracle every other
+implementation is tested against. When the C++ extension (`native/`) is built,
+the PUBLIC names at the bottom of this file route to its uint64 BITBOARD version
+instead, which does the same 8-direction flood on two 64-bit words per board
+rather than on `[B,8,8]` arrays. Same results, bit for bit; ~100x less work per
+board. Callers import `board_batched` and never know which one they got.
 """
 
 import numpy as np
 
+import native
 from board_numpy import BLACK, BOARD_N, EMPTY, WHITE
 
 PASS = BOARD_N * BOARD_N   # 64 — the encode.py action-space convention
@@ -58,7 +67,13 @@ def _own_opp_empty(boards, players):
     return boards == p, boards == -p, boards == EMPTY
 
 
-def legal_move_masks(boards, players):
+# --- NumPy reference implementations ----------------------------------------
+# These stay the definition of the rules and the parity oracle for the C++ port
+# (tests/test_native.py checks the two against each other, and both against the
+# single-board `board_numpy`). They call each other by their `_np_` names on
+# purpose, so exercising this path never accidentally drops into C++ halfway.
+
+def _np_legal_move_masks(boards, players):
     """`[B, 8, 8]` bool — squares where each game's `player` may place a disc.
 
     For each direction: start from own discs, walk over a contiguous opponent run,
@@ -74,10 +89,10 @@ def legal_move_masks(boards, players):
     return moves
 
 
-def legal_action_masks(boards, players):
+def _np_legal_action_masks(boards, players):
     """`[B, 65]` float32 legal-action mask (squares + PASS), matching
     `encode.legal_action_mask`: PASS (64) is legal exactly when no square is."""
-    square_mask = legal_move_masks(boards, players)
+    square_mask = _np_legal_move_masks(boards, players)
     b = boards.shape[0]
     out = np.zeros((b, POLICY_SIZE), dtype=np.float32)
     out[:, :PASS] = square_mask.reshape(b, -1)
@@ -85,7 +100,7 @@ def legal_action_masks(boards, players):
     return out
 
 
-def apply_moves(boards, players, actions):
+def _np_apply_moves(boards, players, actions):
     """Return a NEW `[B, 8, 8]` stack after each game plays its `actions[b]`.
 
     `actions[b]` is a square 0..63 or PASS (64). PASS leaves that board unchanged.
@@ -113,34 +128,63 @@ def apply_moves(boards, players, actions):
     return new.astype(np.int8)
 
 
-def _has_move(boards, colour):
-    return legal_move_masks(boards, np.full(boards.shape[0], colour, np.int8)) \
+def _np_has_move(boards, colour):
+    return _np_legal_move_masks(boards, np.full(boards.shape[0], colour, np.int8)) \
         .reshape(boards.shape[0], -1).any(1)
 
 
-def is_terminal(boards):
+def _np_is_terminal(boards):
     """`[B]` bool — True where NEITHER colour has a legal move (not "board full")."""
-    return ~(_has_move(boards, BLACK) | _has_move(boards, WHITE))
+    return ~(_np_has_move(boards, BLACK) | _np_has_move(boards, WHITE))
 
 
-def count_discs(boards):
+def _np_count_discs(boards):
     """(`[B]` black counts, `[B]` white counts)."""
     flat = boards.reshape(boards.shape[0], -1)
     return (flat == BLACK).sum(1), (flat == WHITE).sum(1)
 
 
-def winner(boards):
+def _np_winner(boards):
     """`[B]` int8: BLACK (+1) / WHITE (-1) / 0 draw, by disc count."""
-    black, white = count_discs(boards)
+    black, white = _np_count_discs(boards)
     out = np.zeros(boards.shape[0], dtype=np.int8)
     out[black > white] = BLACK
     out[white > black] = WHITE
     return out
 
 
-def encode_batch(boards, players):
+def _np_encode_batch(boards, players):
     """`[B, 3, 8, 8]` float32 planes in each game's side-to-move POV, matching
     `encode.encode`: plane 0 = own discs, 1 = opponent discs, 2 = own legal mask."""
     own, opp, _ = _own_opp_empty(boards, players)
-    legal = legal_move_masks(boards, players)
+    legal = _np_legal_move_masks(boards, players)
     return np.stack([own, opp, legal], axis=1).astype(np.float32)
+
+
+# --- public entry points: C++ when it's live, NumPy otherwise ----------------
+
+def _dispatch(name, py_impl):
+    """Bind the public `name` to the C++ implementation when the extension is
+    active, else to the NumPy one. The check is per call (not resolved once at
+    import) so `--no-native` can flip the engine at runtime and the parity tests
+    can drive both paths in one process."""
+    nat = getattr(native.NATIVE, name, None) if native.available() else None
+    if nat is None:
+        return py_impl
+
+    def call(*args):
+        return nat(*args) if native.enabled() else py_impl(*args)
+
+    call.__name__ = name
+    call.__qualname__ = name
+    call.__doc__ = py_impl.__doc__
+    return call
+
+
+legal_move_masks = _dispatch("legal_move_masks", _np_legal_move_masks)
+legal_action_masks = _dispatch("legal_action_masks", _np_legal_action_masks)
+apply_moves = _dispatch("apply_moves", _np_apply_moves)
+is_terminal = _dispatch("is_terminal", _np_is_terminal)
+count_discs = _dispatch("count_discs", _np_count_discs)
+winner = _dispatch("winner", _np_winner)
+encode_batch = _dispatch("encode_batch", _np_encode_batch)

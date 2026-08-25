@@ -1,0 +1,24 @@
+{
+  "family": "othello",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "runtimePlatform": {"operatingSystemFamily": "LINUX", "cpuArchitecture": "X86_64"},
+  "executionRoleArn": "arn:aws:iam::575081121094:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::575081121094:role/othelloTaskRole",
+  "containerDefinitions": [{
+    "name": "othello",
+    "image": "575081121094.dkr.ecr.us-east-1.amazonaws.com/othello:latest",
+    "essential": true,
+    "portMappings": [{"containerPort": 8000, "protocol": "tcp"}],
+    "environment": [
+      {"name": "MODEL_S3_URI", "value": "s3://othello-az-models-575081121094/checkpoints/latest.pt"},
+      {"name": "AWS_DEFAULT_REGION", "value": "us-east-1"},
+      {"name": "OMP_NUM_THREADS", "value": "1"},
+      {"name": "OTHELLO_READONLY", "value": "1"}
+    ],
+    "logConfiguration": {"logDriver": "awslogs", "options": {
+      "awslogs-group": "/ecs/othello", "awslogs-region": "us-east-1", "awslogs-stream-prefix": "ecs"}}
+  }]
+}

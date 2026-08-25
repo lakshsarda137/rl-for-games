@@ -14,10 +14,9 @@ build the page locally:
     python run/dashboard.py --no-open       # just write the file
     python run/dashboard.py --metrics path/to/metrics.jsonl --out my.html
 
-For a LIVE view that refreshes while training runs, start the web app instead
-(`python serve/backend.py`) and open http://127.0.0.1:8000/dashboard — it reads
-the same jsonl through /api/metrics. This script and that route share one HTML
-template (serve/frontend/dashboard.html).
+The HTML template lives next to this script (run/dashboard_template.html).
+(The web app no longer serves a live dashboard; W&B is the live view for
+remote training, see run/KAGGLE.md.)
 """
 
 import argparse
@@ -28,7 +27,7 @@ import webbrowser
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.normpath(os.path.join(_HERE, "..", "data"))
-TEMPLATE = os.path.normpath(os.path.join(_HERE, "..", "serve", "frontend", "dashboard.html"))
+TEMPLATE = os.path.join(_HERE, "dashboard_template.html")
 PLACEHOLDER = "<!--INJECT_METRICS-->"
 
 

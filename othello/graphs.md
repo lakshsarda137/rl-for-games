@@ -4,7 +4,7 @@ This is a plain-English guide to every chart the training loop produces. The sam
 metrics show up in three places:
 
 - **Live on Weights & Biases** (`wandb.ai/<you>/othello-alphazero`) while training runs — add `--wandb` to the run.
-- **The local dashboard** — `http://127.0.0.1:8000/dashboard` (or `python run/dashboard.py`), which reads `data/metrics.jsonl`.
+- **The local dashboard** — `python run/dashboard.py`, which builds a standalone page from `data/metrics.jsonl`.
 - **`data/metrics.jsonl`** — one JSON line per iteration; the raw source of truth.
 
 **The 10-second mental model.** Each *iteration* the agent (1) plays a batch of

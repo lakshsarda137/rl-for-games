@@ -1,0 +1,12 @@
+**/__pycache__
+**/*.pyc
+data/
+artifacts/
+third_party/
+native/*.so
+native/*.dylib
+native/*.pyd
+tests/
+run/
+*.md
+.git

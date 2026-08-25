@@ -1,185 +1,89 @@
-# Othello Self-Play RL
+# Othello AI
 
-A scaled-down **AlphaZero** that learns Othello (Reversi) purely from self-play:
-a policy+value neural network guided by Monte-Carlo Tree Search, trained against
-its own games, and benchmarked on a ladder of minimax opponents (plus the strong
-external engine **Edax**). Comes with a terminal viewer and a local web app to
-watch bots play or play them yourself.
+A computer program that taught itself to play Othello, plus a website where you can play against it.
 
-Full design rationale lives in [`othello_alphazero_implementation_plan.md`](othello_alphazero_implementation_plan.md).
-Agent-facing status and non-obvious decisions live in [`CLAUDE.md`](CLAUDE.md).
+**Play it here:** http://othello-alb-381409665.us-east-1.elb.amazonaws.com
 
-## Quick start
+No download or setup is needed. Open the link, press **New Game**, and click a highlighted square to place a disc.
 
-```bash
-# Run the tests (fast tier, ~10s wall — suites run in parallel)
-python run_tests.py                 # add --full for the heavy tier (~35s wall); --serial to serialize
+## What is Othello?
 
-# Play in the terminal (you are Black, vs depth-3 minimax)
-python run/play_cli.py --black human --white minimax:3
-python run/play_cli.py --black minimax:4 --white edax:4 --delay 0.4   # watch two bots
+Othello (also called Reversi) is a two player board game on an 8 by 8 grid. One player has black discs, the other has white. You place a disc so that one or more of your opponent's discs are trapped in a straight line between your new disc and one of your existing discs. Those trapped discs flip to your colour. When the board is full, or nobody can move, the player with more discs wins.
 
-# Web app (board in the browser) -> http://127.0.0.1:8000
-python serve/backend.py            # play the trained "AZ net" vs any bot / yourself;
-                                   # also serves the live dashboard at /dashboard
+## How to use the website
 
-# Train the AlphaZero agent (tiny CPU smoke run)
-python run/train_loop.py --tiny
-python run/train_loop.py --kaggle --resume auto   # continue the newest checkpoint
+- **Black** and **White** are the two players. By default you are Black and our AI is White. You move first.
+- Each computer player has a **difficulty**: Easy, Medium, Hard, or Expert. Harder levels think longer before each move, so they play better but take a little more time.
+- You can also set both players to computers and watch them play each other. The **Speed** slider controls the pause between computer moves. **Pause** and **Step** let you stop and move one turn at a time.
+- The number next to each player is how many discs they currently have on the board.
 
-# See how training is going (annotated charts from data/metrics.jsonl)
-python run/dashboard.py            # -> data/dashboard.html, opens in your browser
-```
+## The computer players
 
-Training on a free Kaggle GPU: see [`run/KAGGLE.md`](run/KAGGLE.md).
+| Name | What it is |
+|---|---|
+| **Our AI** | The program this project is about. It learned Othello by playing tens of thousands of games against itself, with no human strategy built in. See "How our AI learned" below. |
+| **Edax** | A well known open source Othello program written by other people. It is one of the strongest Othello programs in the world. Even its Easy level is a serious challenge. We include it so you can see how our AI compares to the best. |
+| **Minimax** | A classic way of programming board games. It looks a few moves ahead, imagines every possible reply, and picks the move that leads to the best position according to a fixed set of rules (for example, corners are good, giving your opponent many options is bad). |
+| **Greedy** | Always plays the move that flips the most discs right now. Simple and easy to beat. |
+| **Random** | Picks any legal move at random. |
 
-## Playing / measuring the trained net
+## How our AI learned
 
-Start the web app (`python serve/backend.py`, run from the `othello/` dir) — it serves:
+Our AI follows the recipe made famous by AlphaZero, the program from DeepMind that taught itself chess and Go. Here is the idea in plain terms.
 
-- **Play** (`/`) — pick any player for Black/White; **each trained checkpoint is its own
-  option** (e.g. `AZ · run2 · iter 14`), alongside Minimax at any depth, Edax, random, and
-  greedy. Play them yourself or watch two bots. The scoreboard shows which agent is which colour.
-- **Arena** (in the play page, when a model is loaded) — an N-game, colour-alternated match
-  of the net vs any bot, run **in parallel** with a live **spectate** view (watch any single
-  game move-by-move) and pause / resume / stop. Reports aggregate win/draw/loss + win rate — a
-  far more reliable strength read than one game.
-- **Tournament** (`/tournament`) — a round-robin: add ≥2 bots (any checkpoint / minimax / edax
-  / random / greedy), set games-per-match + concurrency, and get a live **points table**
-  (match win 3 · draw 1.5 · loss 0; tiebreaker = total game wins) with a live match/game viewer.
-- **Models** card — delete checkpoints you don't want from the picker (soft-delete to
-  `data/checkpoints/_trash/`, recoverable).
-- **Dashboard** (`/dashboard`) — the training-metrics charts.
+1. **It starts knowing nothing** except the rules. At first it plays random moves.
+2. **It plays against itself.** Every game it plays is recorded: each board position, which move it chose, and who eventually won.
+3. **It learns from those games.** A neural network (a program that improves at making predictions when shown many examples) is trained to answer two questions about any board position: "which moves look promising?" and "who is likely to win from here?"
+4. **It looks ahead using those predictions.** Before each move it imagines many possible continuations, focusing on the moves the network thinks are promising. This lookahead is called Monte Carlo tree search. The lookahead produces better decisions than the network alone.
+5. **Repeat.** The improved player plays more games against itself, the network learns from those, and so on. Each round it gets a little stronger.
 
-(In-training minimax eval is inspection-only and **off by default** in the Kaggle config; the
-Arena / Tournament are the on-demand strength checks. Judge real strength on a fixed yardstick —
-Minimax/Edax — with 40+ games; **not** training loss, which measures fit to the net's own moving
-self-play targets, not playing strength.)
+The result is a player that was never told any Othello strategy, yet learned things like the value of corners on its own.
 
-To play a Kaggle-trained model locally, pull it down first:
-- **Mid-training (any time, no waiting)** — `python run/pull_wandb.py --run run2` grabs the
-  checkpoint W&B uploads every couple of iterations, installing `latest.pt` **and** a stable
-  archival copy `<run>-iterNN.pt` (so repeated pulls never clobber an earlier model).
-- **After a committed run** — `python run/pull_kaggle.py --kernel <user>/<slug>`.
+Training happened on a free Kaggle graphics card over several sessions. The main model has 10 layers of 128 units and went through about 125 rounds of self play and learning. Measured against a fixed opponent (Edax at a low level, 100 game matches) it went from winning about a quarter of games early on to winning roughly half.
 
-See `run/KAGGLE.md`.
+## Running it on your own computer
 
-## Watching training progress
+You only need this if you want to change the code or train your own model. To just play, use the link at the top.
 
-Every training iteration appends one JSON line to `data/metrics.jsonl` (loss,
-self-play speed, replay-buffer size, win rates, `max_depth_beaten`). For a full
-plain-English guide to every chart — what it means and what "good" looks like —
-see [`graphs.md`](graphs.md). Three ways to read the metrics:
-
-- **Static** — `python run/dashboard.py` builds a self-contained `data/dashboard.html`
-  (data embedded, no server). Ideal for a downloaded Kaggle run: grab `metrics.jsonl`
-  and build the page locally.
-- **Live** — start the web app (`python serve/backend.py`) and open
-  <http://127.0.0.1:8000/dashboard>; it reads the jsonl through `/api/metrics` and
-  auto-refreshes every 15s while training runs.
-- **Live from a remote GPU (Kaggle)** — add `--wandb` to stream each iteration to
-  Weights & Biases and watch a real-time dashboard at wandb.ai from your laptop.
-  This is the only way to see *in-progress* remote training (the local dashboard
-  needs the jsonl pulled down first). See `run/KAGGLE.md`.
-
-## Resuming training across sessions
-
-Checkpoints (`data/checkpoints/iterNNNN.pt`, plus a rolling `latest.pt`, plus any
-`<run>-iterNN.pt` archived by `pull_wandb`) store the weights, optimizer state, and RNG
-state. Continue an interrupted run with:
+You need Python 3.11 and the packages `numpy`, `torch`, `fastapi`, and `uvicorn`.
 
 ```bash
-python run/train_loop.py --kaggle --resume auto             # newest iterNNNN.pt, or latest.pt
-python run/train_loop.py --kaggle --resume data/checkpoints/iter0030.pt
-# on Kaggle, add the live dashboard and keep one continuous curve across sessions:
-python run/train_loop.py --kaggle --resume auto --wandb --wandb-run run2
+cd othello
+python run/play_cli.py --black human --white minimax:3   # play in the terminal
+python serve/backend.py                                  # website at http://127.0.0.1:8000
+python run_tests.py                                      # run the checks (about 10 seconds)
+python run/train_loop.py --tiny                          # a tiny training run to see it work
 ```
 
-`--resume auto` picks the newest `iterNNNN.pt`, or falls back to `latest.pt` — so bringing
-a single rolling checkpoint back into a fresh Kaggle session resumes cleanly.
+The website needs a trained model file at `data/checkpoints/latest.pt` to offer "Our AI". Without one, you can still play Minimax, Greedy, and Random.
 
-Iteration numbering and `metrics.jsonl` continue on one timeline, so `--iterations N`
-means "run N *more* iterations". (The replay buffer isn't checkpointed — it refills
-over the first 1-2 iterations.) This is what makes multi-session Kaggle runs work:
-resume the latest checkpoint each session and, with the same `--wandb-run`, W&B keeps
-one live curve. Full Kaggle runbook: [`run/KAGGLE.md`](run/KAGGLE.md).
+Optional extras:
 
-## Repository layout
+- **Edax** is not included in this repository. `opponents/EDAX_SETUP.md` explains how to build it. The website works without it.
+- **Faster training:** `python native/build.py` compiles a small piece of C++ code that makes self play much faster. Everything works without it, just slower.
+- **Training on Kaggle** (free graphics card): see `run/KAGGLE.md`.
+- **Developer view of the website:** add `?dev` to the address (for example `http://127.0.0.1:8000/?dev`). This shows every saved version of the model, an Arena for running many games at once to measure strength, a Models list, and a Tournament page where several computer players play each other.
+
+## What is in this folder
 
 ```
 othello/
-├── engine/                 # the game — the correctness oracle for everything else
-│   ├── board_numpy.py      #   NumPy Othello rules (moves, flips, passing, terminal, scoring) — the oracle
-│   ├── board_batched.py    #   same rules vectorised over B boards [B,8,8] (NumPy, for fast self-play)
-│   ├── board_torch.py      #   same rules on Torch tensors (opt-in on-GPU search, --selfplay-torch; PARKED)
-│   ├── encode.py           #   board <-> NN input planes; the 65-action space; PERSPECTIVE convention
-│   └── symmetry.py          #   8-fold dihedral transforms (board + 65-policy, jointly)
-├── opponents/              # the yardsticks the agent is measured against
-│   ├── heuristic.py        #   4-component eval (parity, mobility, corners, stability) + weight table
-│   ├── minimax.py          #   alpha-beta minimax; depth = the difficulty dial
-│   ├── simple.py           #   random / greedy players + the match runner (play_match)
-│   ├── edax.py             #   wrapper driving the external Edax engine as a subprocess
-│   └── EDAX_SETUP.md       #   how to build/install Edax (it lives in gitignored third_party/)
-├── az/                     # the AlphaZero learner
-│   ├── network.py          #   policy+value ResNet + Evaluator (net -> priors, value; batched)
-│   ├── mcts.py             #   PUCT search (a coroutine), Dirichlet root noise, visit_policy
-│   ├── mcts_batched.py     #   B MCTS trees searched in lockstep as flat arrays (fast self-play, NumPy)
-│   ├── mcts_torch.py       #   the same batched MCTS on Torch tensors (opt-in on-GPU search; PARKED)
-│   ├── selfplay.py         #   game generation -> training examples + records (array-ops / pool / multi-core)
-│   ├── replay_buffer.py    #   rolling FIFO of (planes, pi, mask, z)
-│   ├── train.py            #   loss = value MSE + masked policy cross-entropy + L2
-│   └── evaluate.py         #   ladder eval vs minimax; max_depth_beaten
-├── run/                    # orchestration + entrypoints
-│   ├── config.py           #   all hyperparameters: Config (full) / Config.tiny() / Config.kaggle()
-│   ├── play_cli.py         #   terminal viewer: watch bots or play one yourself
-│   ├── train_loop.py       #   top-level loop; device auto-detect; --tiny/--kaggle; --resume
-│   ├── dashboard.py        #   build a standalone HTML dashboard from data/metrics.jsonl
-│   ├── pull_kaggle.py      #   pull a committed Kaggle run's checkpoint + metrics into data/
-│   ├── pull_wandb.py       #   pull the CURRENT checkpoint from W&B (play the bot mid-training)
-│   └── KAGGLE.md           #   how to train on a free Kaggle GPU
-├── serve/                  # the web app (local, single-user) — run from the othello/ dir
-│   ├── backend.py          #   FastAPI: play (/api/new,move,bot_move), Arena, Tournament,
-│   │                       #     checkpoint list/delete, /dashboard + /api/metrics
-│   └── frontend/
-│       ├── index.html      #   play UI: any bot / watch bots / Arena / Models (delete)
-│       ├── tournament.html #   round-robin tournament: points table + live match/game viewer
-│       └── dashboard.html  #   annotated training-metrics charts (live or static)
-├── tests/                  # tiered test suites (fast default, --full heavy)
-│   ├── harness.py          #   check() + the fast/full runner
-│   └── test_*.py           #   engine parity/perft, encode, symmetry, minimax, edax, az pipeline
-├── run_tests.py            # runs all suites in parallel; warns if the fast tier exceeds 20s wall
-├── data/                   # (gitignored) checkpoints, game_records, metrics.jsonl
-└── third_party/edax/       # (gitignored) the built Edax binary + eval weights
+  engine/       the rules of Othello (the rest of the code trusts this part)
+  native/       optional C++ version of the rules and the lookahead, for speed
+  opponents/    Minimax, Greedy, Random, and the Edax wrapper
+  az/           the self learning player: neural network, lookahead, self play, training
+  run/          scripts: train, play in the terminal, pull models from Kaggle
+  serve/        the website (backend.py) and its web pages (frontend/)
+  deploy/       files for running the website on a cloud server (Docker, AWS)
+  tests/        automatic checks that everything still works
+  data/         (not in git) trained models, game records, training logs
+  third_party/  (not in git) the Edax program
 ```
 
-## How the pieces fit
+## Words used in this project
 
-1. **Engine** defines the rules and is the single source of truth. Everything
-   else calls it; `board_numpy.py` is the reference oracle, `board_batched.py` is a
-   vectorised NumPy copy for fast self-play, and `board_torch.py` is an opt-in Torch
-   port that runs the search on-GPU (`--selfplay-torch`) — built + verified but PARKED
-   (op-launch-bound ~2 g/s on a T4, no faster than NumPy there; see `CLAUDE.md`).
-2. **Encoding** turns a board into what the network sees — always from the
-   *side-to-move's* perspective (see `encode.py`, this is the key convention).
-3. **Network** maps a position to (move priors, value). **MCTS** uses it to look
-   ahead and produce a stronger move distribution than the raw network.
-4. **Self-play** plays games with MCTS, recording each position, the search's
-   move preferences, and (at game end) who won. **Training** nudges the network
-   toward those targets. Repeat → the agent improves.
-5. **Evaluation** measures strength on the minimax ladder; the headline metric is
-   `max_depth_beaten` — the deepest minimax the agent beats ≥55% of the time.
-
-## Difficulty dials
-
-- **Minimax:** `minimax:D` where `D` is search depth (1–8). Deeper = stronger
-  (and slower in pure Python: d5 ≈ 4s/move, d6 ≈ 9s/move).
-- **Edax:** `edax:L` where `L` is the level (0–30). Even low levels are very
-  strong. Requires a local Edax build (see `opponents/EDAX_SETUP.md`); optional.
-
-## Testing
-
-Two tiers (see `tests/harness.py`), and suites run in parallel (`run_tests.py`):
-- **FAST** (default, ~10s wall) — runs after every change: correctness, encoding,
-  symmetry, batched-engine/MCTS parity, overfit-tiny, a light strength match.
-- **FULL** (`--full`, ~35s wall) — adds deep perft, strength matches, multi-process
-  self-play, the end-to-end training loop. Run when a change warrants the heavy checks.
+- **Model** or **checkpoint**: a saved copy of the neural network at some point in training. `latest.pt` is the newest one.
+- **Iteration** or **round**: one cycle of "play games against yourself, then learn from them".
+- **Simulations**: how many possible continuations the AI imagines before choosing a move. The difficulty levels on the website set this for you.
+- **Self play**: the AI playing games against a copy of itself to produce training data.
+- **Neural network**: a program that learns to make predictions by being shown many examples, instead of being given rules by a person.

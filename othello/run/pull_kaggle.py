@@ -131,8 +131,8 @@ def pull_once(kernel, dataset, out):
                   "checkpoints/ + metrics.jsonl) — will retry.")
             return False
     print(f"[pull] installed: {summary}")
-    print("[pull] refresh http://127.0.0.1:8000/dashboard (or rebuild with "
-          "run/dashboard.py); the web app will use the new weights on the next New Game.")
+    print("[pull] rebuild the charts with run/dashboard.py; the web app will use the "
+          "new weights on the next New Game.")
     return True
 
 
