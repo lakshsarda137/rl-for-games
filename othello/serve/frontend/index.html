@@ -259,7 +259,7 @@
         <h2>Playback <span class="note">for computer turns</span></h2>
         <div class="field">
           <label for="speed">Speed</label>
-          <div class="controls"><input type="range" id="speed" min="0" max="1500" step="100" value="500" aria-label="Pause between computer moves"></div>
+          <div class="controls"><input type="range" id="speed" min="0" max="1500" step="100" value="1000" aria-label="Speed of computer moves"></div>
         </div>
         <div class="btn-row">
           <button class="btn" id="pauseBtn">Pause</button>
@@ -562,7 +562,7 @@ async function newGame() {
 function tick() {
   if (!state || state.done) return;
   if (state.current_is_human) { if (state.must_pass) setTimeout(() => doMove(PASS), 650); return; }
-  if (!paused) setTimeout(botMove, +$("speed").value);
+  if (!paused) setTimeout(botMove, 1500 - +$("speed").value);   // slider right = faster (shorter pause)
 }
 async function doMove(move) {
   if (busy || !state || state.done) return;
