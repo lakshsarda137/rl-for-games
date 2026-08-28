@@ -568,7 +568,7 @@ def _play_tourney_game(job, priv, mi, gi):
         _recompute_standings(job)
 
 
-def _run_tourney(job_id, specs, games_per_match, concurrency, seed):
+def _run_tourney(job_id, specs, games_per_match, concurrency, seed, labels=None):
     job = _TOURNEYS[job_id]
     priv = _TOURNEY_PRIV[job_id]
     try:
@@ -577,7 +577,10 @@ def _run_tourney(job_id, specs, games_per_match, concurrency, seed):
         job.update(error=str(exc), done=True)
         return
     n = len(specs)
-    job["participants"] = [{"i": i, "spec": specs[i], "label": _pretty_label(specs[i])} for i in range(n)]
+    labels = list(labels or [])
+    job["participants"] = [{"i": i, "spec": specs[i],
+                            "label": (labels[i] if i < len(labels) and labels[i] else _pretty_label(specs[i]))}
+                           for i in range(n)]
     rng = np.random.default_rng(seed)
     start = [int(x) for x in initial_board().reshape(-1)]
     tasks = []
@@ -651,7 +654,7 @@ def build_player(spec):
     if _is_az_spec(spec):
         return _build_az_player(spec)       # the trained AlphaZero net (latest or a chosen checkpoint)
     if _is_ext_spec(spec):
-        return _build_ext_player(spec)      # an external RL net (alpha-zero-general) via our MCTS
+        return _build_ext_player(spec)      # an external RL net (alpha-zero-general) driven by this MCTS
     raise ValueError(f"unknown player: {spec!r}")
 
 
@@ -732,6 +735,7 @@ class DeleteCkptReq(BaseModel):
 
 class TourneyReq(BaseModel):
     players: list = []            # >=2 bot specs (no human)
+    labels: list = []             # optional display names, parallel to players (else auto)
     games_per_match: int = 4
     concurrency: int = 4
 
@@ -861,7 +865,8 @@ def tournament_start(req: TourneyReq):
     _TOURNEY_PRIV[job_id] = {"matches": [], "lock": threading.Lock()}
     _trim_tourneys()
     t = threading.Thread(target=_run_tourney,
-                         args=(job_id, specs, gpm, conc, int.from_bytes(os.urandom(4), "little")),
+                         args=(job_id, specs, gpm, conc, int.from_bytes(os.urandom(4), "little"),
+                               [str(x)[:40] for x in (req.labels or [])]),
                          daemon=True)
     t.start()
     return _TOURNEYS[job_id]

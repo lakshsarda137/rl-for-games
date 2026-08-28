@@ -215,11 +215,11 @@
       <span class="mark"></span>
       <div>
         <h1>Othello</h1>
-        <p class="tagline">Play against our AI, or watch two computer players play each other.</p>
+        <p class="tagline">Play against the AI, or watch two computer players play each other.</p>
       </div>
     </div>
-    <div id="devLinks" style="display:flex; gap:8px; flex-wrap:wrap" hidden>
-      <a class="link-btn" href="/tournament?dev">🏆 Tournament</a>
+    <div style="display:flex; gap:8px; flex-wrap:wrap">
+      <a class="link-btn" id="tourneyLink" href="/tournament">🏆 Tournament</a>
     </div>
   </header>
 
@@ -333,12 +333,12 @@ const $ = id => document.getElementById(id);
 const BLACK = 1, WHITE = -1, PASS = 64;
 let gameId = null, state = null, paused = false, busy = false, config = {};
 // Developer mode (?dev in the URL) reveals the Arena / Models / Tournament tools and
-// lists every saved version of our AI. Regular visitors see one "Our AI" entry and
+// lists every saved version of the AI. Regular visitors see one "AI" entry and
 // word-based difficulty levels; no engine numbers anywhere.
 const DEV = new URLSearchParams(location.search).has("dev");
 
 // ---------- difficulty levels ----------
-// Each level maps to the engine's real knob (search effort for our AI, search depth
+// Each level maps to the engine's real knob (search effort for the AI, search depth
 // for Minimax, Edax level). Players never see the numbers.
 const LEVELS = ["Easy", "Medium", "Hard", "Expert"];
 const DEFAULT_LEVEL = 1;   // Medium
@@ -372,11 +372,11 @@ function fillPlayerSelect(sel, { human = true, chosen } = {}) {
   if (human) add("human", "Human");
   if (config.az_available && (config.checkpoints || []).length) {
     if (DEV) {
-      const g = document.createElement("optgroup"); g.label = "Our AI (every saved version)";
-      for (const c of config.checkpoints) add("az@" + c.label, "Our AI · " + ckptLabelText(c), g);
+      const g = document.createElement("optgroup"); g.label = "AI (every saved version)";
+      for (const c of config.checkpoints) add("az@" + c.label, "AI · " + ckptLabelText(c), g);
       sel.appendChild(g);
     } else {
-      add("az@" + latestCkpt().label, "Our AI");
+      add("az@" + latestCkpt().label, "AI");
     }
   }
   if (DEV && (config.external_models || []).length) {
@@ -457,7 +457,7 @@ function specOf(typeSel, levelSel) {
   if (k === "extbot") return "extbot:" + n + "@" + t.slice(7);
   return k + ":" + n;
 }
-// Backend spec string -> short human label for the scoreboard ("Our AI · Hard").
+// Backend spec string -> short human label for the scoreboard ("AI · Hard").
 function levelWord(kind, n) {
   const i = (LEVEL_PARAMS[kind] || []).indexOf(+n);
   return i >= 0 ? LEVELS[i] : (DEV ? String(n) : "");
@@ -473,7 +473,7 @@ function prettySpec(spec) {
   const num = (spec.split("@")[0].split(":")[1]) || "";
   if (spec.startsWith("extbot")) return withLevel("RL " + (at >= 0 ? ck : "bot"), "extbot", num);
   if (spec.startsWith("az")) {
-    let name = "Our AI";
+    let name = "AI";
     if (DEV) {
       if (ck === "latest") name += config.az_iteration != null ? ` (iter ${config.az_iteration})` : "";
       else { const r = ck.match(/^(.+)-iter0*(\d+)$/); const m = ck.match(/iter0*(\d+)/);
@@ -706,7 +706,7 @@ async function arenaControl(action) {
   buildBoard(); state = previewState(); render();
   config = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
   fillLevelSelect($("blackLevel")); fillLevelSelect($("whiteLevel"));
-  // Default match: you (Black) against our AI (White). Fall back to Minimax if no model is loaded.
+  // Default match: you (Black) against the AI (White). Fall back to Minimax if no model is loaded.
   const ai = (config.az_available && latestCkpt()) ? "az@" + latestCkpt().label : "minimax";
   fillPlayerSelect($("blackType"), { human: true, chosen: "human" });
   fillPlayerSelect($("whiteType"), { human: true, chosen: ai });
@@ -714,7 +714,7 @@ async function arenaControl(action) {
   syncLevel($("whiteType"), $("whiteLevel"));
   render();
   if (DEV) {
-    $("devLinks").hidden = false;
+    $("tourneyLink").href = "/tournament?dev";
     if (config.az_available) {
       $("arenaBox").hidden = false;
       $("arenaSims").value = config.default_az_sims ? Math.min(80, config.default_az_sims) : 80;
@@ -730,8 +730,8 @@ async function arenaControl(action) {
   }
   const hints = [];
   hints.push(config.az_available
-    ? "Our AI learned Othello by playing against itself. Pick a difficulty next to a player; harder levels think longer before each move."
-    : "Our AI is not loaded on this server, so the computer players are Minimax, Greedy and Random.");
+    ? "The AI learned Othello by playing against itself. Pick a difficulty next to a player; harder levels think longer before each move."
+    : "The AI is not loaded on this server, so the computer players are Minimax, Greedy and Random.");
   if (config.edax_available) hints.push("Edax is a world-class Othello program. Even its Easy level is a serious challenge.");
   $("edaxHint").innerHTML = hints.join("<br>");
 })();

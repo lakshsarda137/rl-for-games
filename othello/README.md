@@ -12,7 +12,8 @@ Othello (also called Reversi) is a two player board game on an 8 by 8 grid. One 
 
 ## How to use the website
 
-- **Black** and **White** are the two players. By default you are Black and our AI is White. You move first.
+- **Tournament** (button at the top): pick several computer players and they all play each other. A points table shows who did best.
+- **Black** and **White** are the two players. By default you are Black and the AI is White. You move first.
 - Each computer player has a **difficulty**: Easy, Medium, Hard, or Expert. Harder levels think longer before each move, so they play better but take a little more time.
 - You can also set both players to computers and watch them play each other. The **Speed** slider controls the pause between computer moves. **Pause** and **Step** let you stop and move one turn at a time.
 - The number next to each player is how many discs they currently have on the board.
@@ -21,15 +22,15 @@ Othello (also called Reversi) is a two player board game on an 8 by 8 grid. One 
 
 | Name | What it is |
 |---|---|
-| **Our AI** | The program this project is about. It learned Othello by playing tens of thousands of games against itself, with no human strategy built in. See "How our AI learned" below. |
-| **Edax** | A well known open source Othello program written by other people. It is one of the strongest Othello programs in the world. Even its Easy level is a serious challenge. We include it so you can see how our AI compares to the best. |
+| **AI** | The program this project is about. It learned Othello by playing tens of thousands of games against itself, with no human strategy built in. See "How the AI learned" below. |
+| **Edax** | A well known open source Othello program written by other people. It is one of the strongest Othello programs in the world. Even its Easy level is a serious challenge. It is included so you can see how the AI compares to the best. |
 | **Minimax** | A classic way of programming board games. It looks a few moves ahead, imagines every possible reply, and picks the move that leads to the best position according to a fixed set of rules (for example, corners are good, giving your opponent many options is bad). |
 | **Greedy** | Always plays the move that flips the most discs right now. Simple and easy to beat. |
 | **Random** | Picks any legal move at random. |
 
-## How our AI learned
+## How the AI learned
 
-Our AI follows the recipe made famous by AlphaZero, the program from DeepMind that taught itself chess and Go. Here is the idea in plain terms.
+The AI follows the recipe made famous by AlphaZero, the program from DeepMind that taught itself chess and Go. Here is the idea in plain terms.
 
 1. **It starts knowing nothing** except the rules. At first it plays random moves.
 2. **It plays against itself.** Every game it plays is recorded: each board position, which move it chose, and who eventually won.
@@ -55,14 +56,14 @@ python run_tests.py                                      # run the checks (about
 python run/train_loop.py --tiny                          # a tiny training run to see it work
 ```
 
-The website needs a trained model file at `data/checkpoints/latest.pt` to offer "Our AI". Without one, you can still play Minimax, Greedy, and Random.
+The website needs a trained model file at `data/checkpoints/latest.pt` to offer "AI". Without one, you can still play Minimax, Greedy, and Random.
 
 Optional extras:
 
 - **Edax** is not included in this repository. `opponents/EDAX_SETUP.md` explains how to build it. The website works without it.
 - **Faster training:** `python native/build.py` compiles a small piece of C++ code that makes self play much faster. Everything works without it, just slower.
 - **Training on Kaggle** (free graphics card): see `run/KAGGLE.md`.
-- **Developer view of the website:** add `?dev` to the address (for example `http://127.0.0.1:8000/?dev`). This shows every saved version of the model, an Arena for running many games at once to measure strength, a Models list, and a Tournament page where several computer players play each other.
+- **Developer view of the website:** add `?dev` to the address (for example `http://127.0.0.1:8000/?dev`). This shows every saved version of the model, an Arena for running many games at once to measure strength, and a Models list.
 
 ## What is in this folder
 

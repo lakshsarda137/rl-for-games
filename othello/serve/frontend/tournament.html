@@ -46,6 +46,7 @@
   select:hover, input:hover { border-color: var(--line-2); } select:focus, input:focus { outline: none; border-color: var(--primary); }
   select { appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 30px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right 11px center; }
   input.num { width: 66px; flex: 0 0 66px; text-align: center; padding: 0 8px; }
+  select.lvl { width: 116px; flex: 0 0 116px; }
   #addType { flex: 1 1 200px; min-width: 160px; }
 
   .btn { height: 40px; padding: 0 16px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--card-2); color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; transition: background .12s, border-color .12s, filter .12s; }
@@ -131,7 +132,7 @@
   <header class="topbar">
     <div class="brand">
       <span class="mark"></span>
-      <div><h1>Tournament</h1><p class="tagline">Round-robin — every bot plays every other. Match win 3 · draw 1.5 · loss 0.</p></div>
+      <div><h1>Tournament</h1><p class="tagline">Every player plays every other. Match win 3 points, draw 1.5, loss 0.</p></div>
     </div>
     <div class="links">
       <a class="link-btn" href="/">♟ Play</a>
@@ -140,18 +141,18 @@
 
   <!-- setup -->
   <div class="card" id="setupCard">
-    <h2>Set up <span class="note">add 2+ bots, then start</span></h2>
+    <h2>Set up <span class="note">add 2 or more players, then start</span></h2>
     <div class="setup">
       <div class="addrow">
         <span class="tag">Add</span>
         <select id="addType" aria-label="Participant type"></select>
-        <input type="number" id="addParam" class="num" value="2" aria-label="Participant parameter">
-        <button class="btn sm" id="addBtn">+ Add participant</button>
+        <select id="addLevel" class="lvl" aria-label="Difficulty"></select>
+        <button class="btn sm" id="addBtn">+ Add player</button>
       </div>
       <div class="chips-row" id="participants"><span class="pchip-empty">No participants yet.</span></div>
       <div class="settings">
         <label>Games / match <input type="number" id="gpm" class="num" min="1" max="100" value="4"></label>
-        <label title="How many games run at once across all matches">Concurrency <input type="number" id="conc" class="num" min="1" max="8" value="4"></label>
+        <label title="How many games run at the same time">At once <input type="number" id="conc" class="num" min="1" max="8" value="4"></label>
       </div>
       <div class="start-row">
         <button class="btn primary" id="startBtn" disabled>Start tournament</button>
@@ -217,61 +218,68 @@ let config = {}, participants = [], job = null, jobId = null, timer = null;
 let focusMatch = null, focusGame = 0, tilesBuilt = -1, tileCells = [], focusCells = [];
 
 // ---------- player options (no human) ----------
+const DEV = new URLSearchParams(location.search).has("dev");
+const LEVELS = ["Easy", "Medium", "Hard", "Expert"];
+const DEFAULT_LEVEL = 1;
+const LEVEL_PARAMS = { az: [10, 40, 120, 400], extbot: [10, 40, 120, 400], minimax: [1, 2, 4, 5], edax: [1, 4, 10, 21] };
 function ckptLabelText(c) {
   if (c.is_latest) return `latest · iter ${c.iteration ?? "?"}`;
-  const m = c.label.match(/^(.+)-iter0*(\d+)$/);   // archived pull "<run>-iter<NN>" -> show the run
+  const m = c.label.match(/^(.+)-iter0*(\d+)$/);
   if (m) return `${m[1]} · iter ${m[2]}`;
   return c.iteration != null ? `iter ${c.iteration}` : c.label;
 }
+function latestCkpt() { const l = config.checkpoints || []; return l.find(c => c.is_latest) || l[0] || null; }
 function fillPlayerSelect(sel) {
   sel.innerHTML = "";
   const add = (val, label, parent = sel) => { const o = document.createElement("option"); o.value = val; o.textContent = label; parent.appendChild(o); };
   if (config.az_available && (config.checkpoints || []).length) {
-    const g = document.createElement("optgroup"); g.label = "AlphaZero net";
-    for (const c of config.checkpoints) add("az@" + c.label, "AZ · " + ckptLabelText(c), g);
-    sel.appendChild(g);
+    if (DEV) {
+      const g = document.createElement("optgroup"); g.label = "AI (every saved version)";
+      for (const c of config.checkpoints) add("az@" + c.label, "AI · " + ckptLabelText(c), g);
+      sel.appendChild(g);
+    } else add("az@" + latestCkpt().label, "AI");
   }
-  if ((config.external_models || []).length) {
+  if (DEV && (config.external_models || []).length) {
     const ge = document.createElement("optgroup"); ge.label = "External RL bot";
     for (const m of config.external_models) add("extbot@" + m.stem, "RL · " + m.label, ge);
     sel.appendChild(ge);
   }
-  const g2 = document.createElement("optgroup"); g2.label = "Engines & baselines";
-  add("minimax", "Minimax", g2);
-  if (config.edax_available) add("edax", "Edax", g2);
-  add("random", "Random", g2); add("greedy", "Greedy", g2);
+  const g2 = document.createElement("optgroup"); g2.label = "Other computer players";
+  if (config.edax_available) add("edax", "Edax (strong engine)", g2);
+  add("minimax", "Minimax (classic search)", g2);
+  add("greedy", "Greedy (takes the most discs)", g2);
+  add("random", "Random", g2);
   sel.appendChild(g2);
 }
-function paramKind(t) { return (t.startsWith("az@") || t.startsWith("extbot@")) ? "az" : (t === "minimax" ? "minimax" : (t === "edax" ? "edax" : null)); }
-function syncAddParam() {
-  const t = $("addType").value, p = $("addParam"), k = paramKind(t);
-  p.hidden = !k;
-  if (k === "minimax") { p.min = 1; p.max = config.max_minimax_depth || 8; if (+p.value > p.max || +p.value < 1) p.value = 2; }
-  else if (k === "edax") { p.min = 0; p.max = config.max_edax_level || 30; if (+p.value > p.max) p.value = 6; }
-  else if (k === "az") { p.min = config.min_az_sims || 10; p.max = config.max_az_sims || 1000; if (+p.value < 10 || +p.value > 1000) p.value = 80; }
+function fillLevelSelect(sel) {
+  sel.innerHTML = "";
+  LEVELS.forEach((name, i) => { const o = document.createElement("option"); o.value = i; o.textContent = name; if (i === DEFAULT_LEVEL) o.selected = true; sel.appendChild(o); });
 }
-function specOf(t, pv) {
-  if (t.startsWith("az@")) return "az:" + pv + "@" + t.slice(3);
-  if (t.startsWith("extbot@")) return "extbot:" + pv + "@" + t.slice(7);
-  if (t === "minimax") return "minimax:" + pv;
-  if (t === "edax") return "edax:" + pv;
-  return t;
+function paramKind(t) { return t.startsWith("az@") ? "az" : t.startsWith("extbot@") ? "extbot" : (t === "minimax" || t === "edax") ? t : null; }
+function syncAddParam() { $("addLevel").hidden = !paramKind($("addType").value); }
+function specOf(t, li) {
+  const k = paramKind(t); if (!k) return t;
+  const n = LEVEL_PARAMS[k][+li] ?? LEVEL_PARAMS[k][DEFAULT_LEVEL];
+  if (k === "az") return "az:" + n + "@" + t.slice(3);
+  if (k === "extbot") return "extbot:" + n + "@" + t.slice(7);
+  return k + ":" + n;
 }
+function levelWord(kind, n) { const i = (LEVEL_PARAMS[kind] || []).indexOf(+n); return i >= 0 ? LEVELS[i] : (DEV ? String(n) : ""); }
+function withLevel(name, kind, n) { const w = levelWord(kind, n); return w ? `${name} · ${w}` : name; }
 function prettySpec(spec) {
   spec = (spec || "").toLowerCase();
   if (spec === "random") return "Random";
   if (spec === "greedy") return "Greedy";
-  if (spec.startsWith("minimax:")) return "Minimax d" + spec.split(":")[1];
-  if (spec.startsWith("edax")) return "Edax L" + (spec.split(":")[1] || "6");
-  if (spec.startsWith("extbot")) {
-    const at = spec.indexOf("@"), sims = (spec.match(/extbot:(\d+)/) || [])[1];
-    return "RL " + (at >= 0 ? spec.slice(at + 1) : "bot") + (sims ? " · " + sims : "");
-  }
+  if (spec.startsWith("minimax:")) return withLevel("Minimax", "minimax", spec.split(":")[1]);
+  if (spec.startsWith("edax")) return withLevel("Edax", "edax", spec.split(":")[1] || "6");
+  const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest";
+  const num = (spec.split("@")[0].split(":")[1]) || "";
+  if (spec.startsWith("extbot")) return withLevel("RL " + (at >= 0 ? ck : "bot"), "extbot", num);
   if (spec.startsWith("az")) {
-    const at = spec.indexOf("@"), ck = at >= 0 ? spec.slice(at + 1) : "latest", sims = (spec.match(/az:(\d+)/) || [])[1];
-    const r = ck.match(/^(.+)-iter0*(\d+)$/), mi = ck.match(/iter0*(\d+)/);
-    const base = ck === "latest" ? "AZ latest" : r ? `AZ ${r[1]} iter ${r[2]}` : mi ? "AZ iter " + mi[1] : "AZ " + ck;
-    return base + (sims ? " · " + sims : "");
+    let name = "AI";
+    if (DEV) { const r = ck.match(/^(.+)-iter0*(\d+)$/), mi = ck.match(/iter0*(\d+)/);
+               name += ck === "latest" ? " latest" : r ? ` ${r[1]} iter ${r[2]}` : mi ? " iter " + mi[1] : " " + ck; }
+    return withLevel(name, "az", num);
   }
   return spec;
 }
@@ -295,8 +303,8 @@ function renderParticipants() {
   $("setupHint").textContent = n < 2 ? "Add at least 2 participants." : `${n} players → ${n * (n - 1) / 2} matches.`;
 }
 function addParticipant() {
-  const t = $("addType").value, pv = $("addParam").value;
-  const spec = specOf(t, pv);
+  const t = $("addType").value, li = $("addLevel").value;
+  const spec = specOf(t, li);
   participants.push({ spec, label: prettySpec(spec) });
   renderParticipants();
 }
@@ -316,7 +324,7 @@ async function api(path, body) {
 async function startTournament() {
   $("startBtn").disabled = true;
   try {
-    const res = await api("/api/tournament", { players: participants.map(p => p.spec), games_per_match: +$("gpm").value, concurrency: +$("conc").value });
+    const res = await api("/api/tournament", { players: participants.map(p => p.spec), labels: participants.map(p => p.label), games_per_match: +$("gpm").value, concurrency: +$("conc").value });
     jobId = res.job_id; focusMatch = null; focusGame = 0; tilesBuilt = -1;
     $("runCard").hidden = false; $("standCard").hidden = false; $("matchCard").hidden = false;
     render(res);
@@ -434,7 +442,7 @@ $("tNew").addEventListener("click", () => location.reload());
 // ---------- init ----------
 (async function init() {
   config = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
-  fillPlayerSelect($("addType")); syncAddParam(); renderParticipants();
+  fillPlayerSelect($("addType")); fillLevelSelect($("addLevel")); syncAddParam(); renderParticipants();
 })();
 </script>
 </body>
