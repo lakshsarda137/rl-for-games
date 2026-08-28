@@ -741,14 +741,17 @@ class TourneyReq(BaseModel):
 
 
 # --- routes ------------------------------------------------------------------
+_NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate"}   # always fetch fresh pages after a deploy
+
+
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"), headers=_NO_CACHE)
 
 
 @app.get("/tournament")
 def tournament_page():
-    return FileResponse(os.path.join(FRONTEND_DIR, "tournament.html"))
+    return FileResponse(os.path.join(FRONTEND_DIR, "tournament.html"), headers=_NO_CACHE)
 
 
 @app.post("/api/arena")
