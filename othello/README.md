@@ -4,7 +4,7 @@ A computer program that taught itself to play Othello, plus a website where you 
 
 **Play it here:** http://othello-alb-381409665.us-east-1.elb.amazonaws.com
 
-No download or setup is needed. Open the link, press **New Game**, and click a highlighted square to place a disc.
+Built with FastAPI, deployed on AWS. No download or setup is needed. Open the link, press **New Game**, and click a highlighted square to place a disc.
 
 ## What is Othello?
 
@@ -22,6 +22,7 @@ Othello (also called Reversi) is a two player board game on an 8 by 8 grid. One 
 
 | Name | What it is |
 |---|---|
+| **Early AI** | The same program after its first short training run. Much weaker. Play it to see how far the AI came. |
 | **AI** | The program this project is about. It learned Othello by playing tens of thousands of games against itself, with no human strategy built in. See "How the AI learned" below. |
 | **Edax** | A well known open source Othello program written by other people. It is one of the strongest Othello programs in the world. Even its Easy level is a serious challenge. It is included so you can see how the AI compares to the best. |
 | **Minimax** | A classic way of programming board games. It looks a few moves ahead, imagines every possible reply, and picks the move that leads to the best position according to a fixed set of rules (for example, corners are good, giving your opponent many options is bad). |

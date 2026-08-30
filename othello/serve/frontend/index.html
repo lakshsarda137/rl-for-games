@@ -303,6 +303,7 @@
       </div>
 
       <p class="hint" id="edaxHint"></p>
+      <p class="hint">Built with FastAPI. Runs on AWS.</p>
     </aside>
   </main>
 
@@ -357,6 +358,7 @@ function ckptLabelText(c) {
   if (m) return `${m[1]} · iter ${m[2]}`;
   return c.iteration != null ? `iter ${c.iteration}` : c.label;
 }
+function earlyCkpt() { return (config.checkpoints || []).find(c => c.label === "early") || null; }
 function latestCkpt() {
   const list = config.checkpoints || [];
   return list.find(c => c.is_latest) || list[0] || null;
@@ -377,6 +379,7 @@ function fillPlayerSelect(sel, { human = true, chosen } = {}) {
       sel.appendChild(g);
     } else {
       add("az@" + latestCkpt().label, "AI");
+      if (earlyCkpt()) add("az@" + earlyCkpt().label, "Early AI (first version)");
     }
   }
   if (DEV && (config.external_models || []).length) {
@@ -473,7 +476,7 @@ function prettySpec(spec) {
   const num = (spec.split("@")[0].split(":")[1]) || "";
   if (spec.startsWith("extbot")) return withLevel("RL " + (at >= 0 ? ck : "bot"), "extbot", num);
   if (spec.startsWith("az")) {
-    let name = "AI";
+    let name = ck === "early" ? "Early AI" : "AI";
     if (DEV) {
       if (ck === "latest") name += config.az_iteration != null ? ` (iter ${config.az_iteration})` : "";
       else { const r = ck.match(/^(.+)-iter0*(\d+)$/); const m = ck.match(/iter0*(\d+)/);

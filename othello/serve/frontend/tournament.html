@@ -228,6 +228,7 @@ function ckptLabelText(c) {
   if (m) return `${m[1]} · iter ${m[2]}`;
   return c.iteration != null ? `iter ${c.iteration}` : c.label;
 }
+function earlyCkpt() { return (config.checkpoints || []).find(c => c.label === "early") || null; }
 function latestCkpt() { const l = config.checkpoints || []; return l.find(c => c.is_latest) || l[0] || null; }
 function fillPlayerSelect(sel) {
   sel.innerHTML = "";
@@ -237,7 +238,10 @@ function fillPlayerSelect(sel) {
       const g = document.createElement("optgroup"); g.label = "AI (every saved version)";
       for (const c of config.checkpoints) add("az@" + c.label, "AI · " + ckptLabelText(c), g);
       sel.appendChild(g);
-    } else add("az@" + latestCkpt().label, "AI");
+    } else {
+      add("az@" + latestCkpt().label, "AI");
+      if (earlyCkpt()) add("az@" + earlyCkpt().label, "Early AI (first version)");
+    }
   }
   if (DEV && (config.external_models || []).length) {
     const ge = document.createElement("optgroup"); ge.label = "External RL bot";
@@ -276,7 +280,7 @@ function prettySpec(spec) {
   const num = (spec.split("@")[0].split(":")[1]) || "";
   if (spec.startsWith("extbot")) return withLevel("RL " + (at >= 0 ? ck : "bot"), "extbot", num);
   if (spec.startsWith("az")) {
-    let name = "AI";
+    let name = ck === "early" ? "Early AI" : "AI";
     if (DEV) { const r = ck.match(/^(.+)-iter0*(\d+)$/), mi = ck.match(/iter0*(\d+)/);
                name += ck === "latest" ? " latest" : r ? ` ${r[1]} iter ${r[2]}` : mi ? " iter " + mi[1] : " " + ck; }
     return withLevel(name, "az", num);

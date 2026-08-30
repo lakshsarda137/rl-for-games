@@ -13,7 +13,7 @@
     "essential": true,
     "portMappings": [{"containerPort": 8000, "protocol": "tcp"}],
     "environment": [
-      {"name": "MODEL_S3_URI", "value": "s3://othello-az-models-575081121094/checkpoints/latest.pt"},
+      {"name": "MODEL_S3_URI", "value": "s3://othello-az-models-575081121094/checkpoints/latest.pt,s3://othello-az-models-575081121094/checkpoints/early.pt"},
       {"name": "AWS_DEFAULT_REGION", "value": "us-east-1"},
       {"name": "OMP_NUM_THREADS", "value": "1"},
       {"name": "OTHELLO_READONLY", "value": "1"}
