@@ -60,6 +60,7 @@ from board_numpy import (
     legal_moves,
     winner,
 )
+import az_pool
 import edax as edax_mod
 from minimax import minimax_player
 from simple import _random_opening, greedy_move, random_move
@@ -281,7 +282,7 @@ def load_az_evaluator(path):
     # measured 80ms vs 3.6ms per batch-1 forward, i.e. 18s vs 0.8s per 120-sim move.
     # Apple Silicon flushes by default, so this is invisible on a Mac. No-op if the
     # platform doesn't support it.
-    torch.set_flush_denormal(True)
+    torch.set_flush_denormal(True)   # (also re-applied per move: the flag is per-thread, see _fast_move)
 
     mtime = os.path.getmtime(path)
     cached = _AZ_CACHE.get(path)
@@ -308,8 +309,23 @@ def _build_az_player(spec):
     sims, ckpt = _parse_az_spec(spec)
     path = checkpoint_path(ckpt)               # raises ValueError if missing/bad
     evaluator, _ = load_az_evaluator(path)
+    if az_pool.enabled():
+        return az_pool.pooled_az_player(path, sims, None)
     from evaluate import az_player
-    return az_player(evaluator, sims)
+    return _fast_move(az_player(evaluator, sims))
+
+
+def _fast_move(move_fn):
+    """Wrap a torch-backed move fn so it flushes denormals on WHATEVER thread runs it.
+    The CPU flag is per-thread; Starlette's threadpool and the arena/tournament workers
+    are different threads from the one that loaded the model, and without this a move
+    on x86 takes ~8s instead of ~1s."""
+    import torch
+
+    def run(board, player):
+        torch.set_flush_denormal(True)
+        return move_fn(board, player)
+    return run
 
 
 # --- Arena: run N games AZ-vs-opponent, in PARALLEL, spectate-able ------------
@@ -348,13 +364,15 @@ def _make_factory(spec):
         evaluator, it = load_az_evaluator(path)
         from evaluate import az_player
         label = f"AZ {ckpt}" + (f"·it{it}" if it is not None and ckpt == "latest" else "") + f" · {sims} sims"
-        return (lambda rng: az_player(evaluator, sims, rng=rng)), label
+        if az_pool.enabled():
+            return (lambda rng: az_pool.pooled_az_player(path, sims, rng)), label
+        return (lambda rng: _fast_move(az_player(evaluator, sims, rng=rng))), label
     if _is_ext_spec(spec):
         from external_bot import azg_player
         sims, stem = _parse_ext_spec(spec)
         path = external_model_path(stem)
         net = _load_azg_cached(path)                    # loaded once, shared across games
-        return (lambda rng: azg_player(path, sims, net=net, rng=rng)), f"RL {stem} · {sims} sims"
+        return (lambda rng: _fast_move(azg_player(path, sims, net=net, rng=rng))), f"RL {stem} · {sims} sims"
     if spec == "random":
         return (lambda rng: (lambda b, p: random_move(b, p, rng))), "random"
     # greedy / minimax:D / edax:L are stateless move fns — build once, share safely.
