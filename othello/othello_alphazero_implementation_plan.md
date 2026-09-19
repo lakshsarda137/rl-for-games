@@ -4,7 +4,7 @@
 
 **Audience:** A coding agent executing the build, plus a human (RL beginner) supervising it.
 
-**Guiding principle:** Get a *correct* end-to-end pipeline running at tiny scale first, then scale up and optimize. Never block the whole project on the hardest component (the CUDA kernel or Edax). Every phase must produce something runnable and testable.
+**Guiding principle:** Get a *correct* end-to-end pipeline running at tiny scale first, then scale up and optimize. Never block the whole project on the hardest component (the CUDA kernel). Every phase must produce something runnable and testable.
 
 ---
 
@@ -13,14 +13,13 @@
 ### Goals
 1. Train an Othello agent by AlphaZero-style self-play (neural network + MCTS).
 2. Beat a tunable minimax opponent up to a strong depth (primary target: **clearly beat minimax depth-6, ideally depth-8**, using the strong 4-component heuristic in §6).
-3. As a stretch external benchmark, beat **Edax** (the strongest open-source Othello engine) at a low, empirically-calibrated level.
-4. Spectate self-play games (via near-live replay of recorded games).
-5. Play the trained bot yourself in a browser.
-6. Log and graph training metrics with clear definitions.
-7. Use **PyCUDA** for a batched, bitboard-based Othello engine (the resume-worthy custom-kernel component). PyTorch handles the neural network.
+3. Spectate self-play games (via near-live replay of recorded games).
+4. Play the trained bot yourself in a browser.
+5. Log and graph training metrics with clear definitions.
+6. Use **PyCUDA** for a batched, bitboard-based Othello engine (the resume-worthy custom-kernel component). PyTorch handles the neural network.
 
 ### Non-goals
-- State-of-the-art strength. We are not trying to beat Edax at its top (superhuman) levels.
+- State-of-the-art strength.
 - Distributed / multi-GPU training. Single free GPU (Kaggle) is the target.
 - A production web service. The web app is a local, single-user tool.
 
@@ -37,12 +36,10 @@ We do **not** use a single fixed opponent. Strength is measured on a **ladder**,
 | 2 | Minimax depth 4 (strong heuristic) | "Not embarrassing ourselves" checkpoint |
 | 3 | **Minimax depth 6** (strong heuristic) | **Primary success target** |
 | 4 | **Minimax depth 8** (strong heuristic) | Stretch success target |
-| 5 | Edax at level N (calibrated) | External stretch ceiling |
 
 - **Minimax depth is the difficulty knob.** It is the *same* alpha-beta code with one parameter changed, so the whole ladder costs almost nothing to implement.
 - **Headline metric:** `max_depth_beaten` = the largest depth `d` at which the agent wins ≥ 55% of a fixed eval match (colors alternated). Plot this over training iterations — a rising staircase.
 - **Definition of "beat":** win rate ≥ 55% over an eval match of `EVAL_GAMES` games (default 100), with colors alternated evenly, and ideally averaged over a few random-seeded openings to reduce variance.
-- **Edax:** treat as an optional top rung. Even moderate Edax levels are very strong; realistic target is a *low* level. Calibrate empirically (see §6.3).
 
 **Why a ladder, not one benchmark:** any single opponent only discriminates for one phase of training (a weak one saturates at ~100% win, a strong one at ~0%). The ladder always has a rung near 50%, so the signal never goes flat.
 
@@ -63,8 +60,8 @@ Four components. Note the two UI requirements (watch + play) share one frontend.
   └──────────────┘  │           │            ┌───────▼────────┐  │
                     │           │            │ Training step  │  │
   ┌──────────────┐  │   ┌───────▼────────┐   │ (PyTorch/CUDA) │  │
-  │ Minimax /    │◄─┼──►│  Evaluation    │   └───────┬────────┘  │
-  │ Edax         │  │   │  harness       │           │           │
+  │ Minimax      │◄─┼──►│  Evaluation    │   └───────┬────────┘  │
+  │              │  │   │  harness       │           │           │
   └──────────────┘  │   └───────┬────────┘   ┌───────▼────────┐  │
                     │           │            │ Checkpoints +  │  │
                     │           └───────────►│ game records + │  │
@@ -99,7 +96,6 @@ Four components. Note the two UI requirements (watch + play) share one frontend.
 - `numpy` — reference engine, data handling.
 - `fastapi` + `uvicorn` + `websockets` — local backend and live streaming.
 - `tensorboard` (primary) and optionally `wandb` — metrics.
-- `edax` — external binary (compiled from source), driven as a subprocess (stretch).
 
 ### Hard constraint to respect
 The trainer lives in a sandboxed Kaggle session that does **not** natively expose a public web server. Therefore requirement A ("spectate self-play") is satisfied by **recording games during training and replaying them locally as near-live**, not by streaming the exact in-progress game. (Optional upgrade paths: a `cloudflared`/`ngrok` tunnel from Kaggle, or generating fresh self-play locally on CPU for genuine liveness — see §9.3.)
@@ -118,8 +114,7 @@ othello-az/
 │   └── encode.py             # board <-> NN input planes; move indexing
 ├── opponents/
 │   ├── minimax.py            # tunable-depth alpha-beta + heuristic
-│   ├── heuristic.py          # 4-component evaluation (§6)
-│   └── edax.py               # subprocess wrapper (stretch)
+│   └── heuristic.py          # 4-component evaluation (§6)
 ├── az/
 │   ├── network.py            # policy+value ResNet
 │   ├── mcts.py               # PUCT search
@@ -159,12 +154,6 @@ Components:
 **Default weights** (tune later; these are a sane start): `stability: 25, corners: 30, mobility: 5, parity: 25`. Optionally schedule weights by game phase (parity matters more near the end), but a fixed set is fine for a benchmark opponent. Keep weights **fixed** once chosen so the benchmark is reproducible.
 
 Also expose a **static weight-matrix** opponent (weighted piece counter: fixed 8×8 weight table, corners strongly positive, corner-adjacent squares strongly negative) as an optional simpler/faster opponent for very-early sanity checks.
-
-### 6.3 Edax integration (`opponents/edax.py`) — STRETCH
-- Compile Edax from source; invoke as a subprocess.
-- Drive it by feeding a board position + side-to-move and reading its chosen move, with its **level** set to a fixed value (level is the tunable strength knob; higher = deeper/stronger).
-- **Calibration:** run the trained agent vs Edax across levels to find the highest level it can beat. Report that level. Realistic target is a **low** level; top levels are essentially superhuman and out of scope.
-- Keep Edax fully optional and behind a flag — it must never block the core loop.
 
 ---
 
@@ -244,7 +233,6 @@ Params: `SIMS` (100–200 self-play, more for eval), `c_puct ≈ 1.5`.
 - **Ladder eval:** candidate vs minimax at each depth in `{2,4,6,8}`; `EVAL_GAMES` games, colors alternated. Compute win rate per depth and `max_depth_beaten`.
 - **Relative eval:** candidate vs previous best; update an **Elo** rating from the outcome.
 - **Gatekeeping:** promote candidate to "best" (the self-play generator) only if it beats current best by a margin (e.g., ≥ 55%).
-- **Edax eval:** optional, behind a flag (§6.3).
 
 ---
 
@@ -335,8 +323,6 @@ All values are starting points; expect to tune `SIMS`, `GAMES_PER_ITER`, and net
 **Phase 4 — PyCUDA batched engine.** Bitboard kernels; verify parity with NumPy engine; route self-play/eval through it. *Acceptance:* engine-parity test passes on thousands of random games; `selfplay_games_per_sec` measurably higher; benchmark recorded.
 
 **Phase 5 — Web app: watch + play, integrated.** FastAPI backend, WebSocket spectator replaying records, human-vs-checkpoint play mode, TensorBoard alongside. *Acceptance:* you can watch a recorded self-play game render move-by-move and play a full game against a chosen checkpoint.
-
-**Phase 6 (stretch) — Edax.** Compile, wrap, calibrate the level the agent beats. *Acceptance:* reproducible win rate vs Edax at level N reported.
 
 ---
 

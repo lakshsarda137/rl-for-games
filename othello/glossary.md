@@ -96,7 +96,7 @@ Terms marked ⭐ are the load-bearing concepts.
 > Note: classic MCTS estimates a leaf's value with random **rollouts** to the end.
 > AlphaZero replaces rollouts with the net's value head — faster and stronger.
 
-- **Search depth (minimax/Edax) vs simulation count (MCTS)** ⭐ — different *units*, not
+- **Search depth (minimax) vs simulation count (MCTS)** ⭐ — different *units*, not
   interchangeable. Minimax **depth d** = a fixed horizon that checks **every** move **exactly
   d plies** ahead (full-width brute force + alpha-beta), scoring leaves with a hand-written
   heuristic; cost explodes with depth. MCTS **sims N** = a **budget of N selective probes**,

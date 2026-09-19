@@ -100,7 +100,7 @@ Run from the `othello/` dir. `--out /kaggle/working/az_data` keeps outputs toget
 | Stronger training targets | add `--sims N` (MCTS sims/move in self-play; default 96). Higher = better targets, fewer games/sec |
 | Bigger/smaller net | add `--net BxC` (default `10x128`; `--net 5x64` = the old quick net) |
 | Tune LR decay | `--lr-final LR` / `--lr-horizon N` (defaults `1e-4` / `160`; LR cosine-decays from `1e-3`). Auto-on; set `--lr-final 1e-3` to disable |
-| Faster net eval | `--fp16` runs the self-play net forward in FP16 on the T4's tensor cores (~43% of self-play is the net). Opt-in; pair with `--profile` to see `net_fwd` drop, then judge strength on Edax |
+| Faster net eval | `--fp16` runs the self-play net forward in FP16 on the T4's tensor cores (~43% of self-play is the net). Opt-in; pair with `--profile` to see `net_fwd` drop, then judge strength in the Arena |
 | Profile self-play | `--profile` prints a per-iter time breakdown (GPU net-forward vs CPU search) + the Amdahl ceiling. Header reports `engine=C++` or `engine=NumPy` |
 | A/B the C++ port | `--no-native` forces the NumPy engine + search. Same games either way — run with and without to measure the port on your GPU |
 | More games per iter | add `--games N` (default 96; **also scales train-steps + buffer linearly**, so the extra data is trained on) |
@@ -128,7 +128,7 @@ The flags that matter:
   run showed the net forward is **~43%** of self-play with the 10x128 net — the single biggest slice, and the
   one part a CPU/C++ search port *cannot* speed up — so FP16 attacks it directly. No-op on CPU. **Opt-in:**
   FP16 rounding (~1e-3) isn't bit-exact, so pair it with `--profile` to confirm `net_fwd` drops, then judge
-  strength vs **Edax (40+ games)** before baking it into a config. BatchNorm + softmax stay FP32 (only the
+  strength in the Arena (40+ games) before baking it into a config. BatchNorm + softmax stay FP32 (only the
   conv/linear matmuls go half), so the accuracy hit is small.
 - **`--profile`** — print a per-iteration self-play time breakdown (GPU **net_fwd** vs CPU **tree_ops /
   net_prep / postproc**) with an Amdahl verdict. This is the measurement behind "is a native/C++ MCTS port
@@ -221,7 +221,7 @@ them for manual download if you'd rather not use the API.
 
 ## Notes
 - **Deps:** Kaggle images ship torch + numpy (no install for training). `--wandb`
-  needs `pip install wandb` (Cell 5 does it). Edax / FastAPI are only for the local app.
+  needs `pip install wandb` (Cell 5 does it). FastAPI is only for the local app.
 - **On a GPU keep `workers=1`.** `--workers >1` makes processes contend for the one
   shared GPU and is *slower* (measured 2.1→1.3 g/s at 4 workers on a T4); it only
   helps a `--device cpu` run. `--kaggle` already sets `workers=1`.
