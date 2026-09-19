@@ -41,7 +41,7 @@ The AI follows the recipe made famous by AlphaZero, the program from DeepMind th
 
 The result is a player that was never told any Othello strategy, yet learned things like the value of corners on its own.
 
-Training happened on a free Kaggle graphics card over several sessions. The main model has 10 layers of 128 units and went through about 125 rounds of self play and learning. Measured against a fixed opponent (Edax at a low level, 100 game matches) it went from winning about a quarter of games early on to winning roughly half.
+Training happened on a free Kaggle graphics card over several sessions. The main model has 10 layers of 128 units and went through about 125 rounds of self play and learning.
 
 ## Running it on your own computer
 
