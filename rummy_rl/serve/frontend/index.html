@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rummy Hand Checker</title>
+<style>
+  :root {
+    --bg: #0b0d11; --bg-grad: radial-gradient(1200px 700px at 50% -10%, #141926 0%, #0b0d11 55%);
+    --card: #151922; --card-2: #1b2028; --inset: #0f131a;
+    --line: #262c37; --line-2: #333b48;
+    --ink: #e8eaef; --muted: #98a0ad; --faint: #6a7280;
+    --primary: #5b8cff; --primary-2: #3f74f5;
+    --good: #46c96f; --bad: #f26a6a; --warn: #f3c04e;
+    --felt: #1c7a46; --felt-line: #0d5230; --felt-hi: #24925a;
+    --face: #fbfbfd; --face-ink: #1b1f27; --face-red: #d4343c;
+    --shadow: 0 20px 45px rgba(0,0,0,.5);
+    --r-lg: 16px; --r-md: 12px; --r-sm: 9px;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; padding: 28px 20px 48px;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg-grad); background-color: var(--bg); color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  @media (max-width: 600px) { body { padding: 18px 16px 40px; } }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  button { font: inherit; color: inherit; }
+
+  /* ---- top bar ---- */
+  .topbar { display: flex; align-items: center; gap: 13px; margin-bottom: 22px; }
+  .mark {
+    width: 40px; height: 40px; border-radius: 11px; flex: 0 0 auto; display: grid; place-items: center;
+    background: linear-gradient(150deg, var(--felt-hi), var(--felt-line));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 4px 12px rgba(0,0,0,.4);
+  }
+  .mark span {
+    width: 17px; height: 23px; border-radius: 3px; background: var(--face); color: var(--face-red);
+    display: grid; place-items: center; font-size: 13px; line-height: 1; transform: rotate(-8deg);
+    box-shadow: 4px 2px 0 -1px rgba(0,0,0,.35);
+  }
+  h1 { font-size: 21px; margin: 0; letter-spacing: .2px; font-weight: 650; }
+  .tagline { margin: 1px 0 0; color: var(--muted); font-size: 13px; }
+
+  /* ---- layout ---- */
+  .app { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 22px; align-items: start; }
+  @media (max-width: 900px) { .app { grid-template-columns: 1fr; } }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 18px; }
+  .panel + .panel { margin-top: 18px; }
+  .panel-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .panel-head h2 { font-size: 15px; font-weight: 650; margin: 0; }
+  .count { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .count b { color: var(--ink); }
+  .spacer { flex: 1; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    background: var(--card-2); border: 1px solid var(--line); border-radius: var(--r-sm);
+    padding: 7px 12px; font-size: 13px; font-weight: 550; transition: border-color .15s, background .15s;
+  }
+  .btn:hover { border-color: var(--line-2); background: #212733; }
+  .btn.primary { background: var(--primary-2); border-color: var(--primary-2); color: #fff; }
+  .btn.primary:hover { background: var(--primary); border-color: var(--primary); }
+  .btn:focus-visible, .pcard:focus-visible, input:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+  /* ---- playing cards ---- */
+  .pcard {
+    position: relative; flex: 0 0 auto; width: 58px; aspect-ratio: 5 / 7; padding: 0; border: 0;
+    border-radius: 7px; background: var(--face); color: var(--face-ink); cursor: pointer;
+    box-shadow: 0 1px 0 rgba(255,255,255,.5) inset, 0 3px 8px rgba(0,0,0,.35);
+    transition: transform .12s, opacity .12s, box-shadow .12s; user-select: none;
+  }
+  .pcard.red { color: var(--face-red); }
+  .pcard .idx { position: absolute; top: 5px; left: 6px; font-weight: 700; font-size: 15px; line-height: 1; text-align: center; }
+  .pcard .idx i { display: block; font-style: normal; font-size: 12px; margin-top: 1px; }
+  .pcard .pip { position: absolute; inset: 0; display: grid; place-items: center; font-size: 27px; padding-top: 12px; }
+  .pcard.sm { width: 36px; border-radius: 5px; cursor: default; }
+  .pcard.sm .idx { top: 3px; left: 4px; font-size: 11.5px; }
+  .pcard.sm .idx i { font-size: 10px; }
+  .pcard.sm .pip { font-size: 16px; padding-top: 10px; }
+
+  /* ---- hand tray ---- */
+  .tray {
+    display: flex; flex-wrap: wrap; gap: 8px; padding: 14px; min-height: 124px;
+    border-radius: var(--r-md); background: linear-gradient(160deg, #1a7a48, #0f5c34);
+    box-shadow: inset 0 2px 14px rgba(0,0,0,.32);
+  }
+  .slot { width: 58px; aspect-ratio: 5 / 7; border-radius: 7px; border: 1.5px dashed rgba(255,255,255,.22); }
+  .tray .pcard:hover { transform: translateY(-4px); }
+  .tray .pcard .bar { position: absolute; left: 6px; right: 6px; bottom: 5px; height: 4px; border-radius: 2px; }
+  .tray .pcard .tag {
+    position: absolute; top: -8px; right: -6px; font-size: 10.5px; font-weight: 700; line-height: 1;
+    padding: 3px 5px; border-radius: 6px; background: var(--bad); color: #fff; box-shadow: 0 2px 5px rgba(0,0,0,.4);
+  }
+  .tray .pcard.discard { opacity: .5; }
+  .tray .pcard.discard .tag { background: #4a5261; }
+  .tray-hint { margin: 10px 2px 0; font-size: 12.5px; color: var(--faint); }
+
+  .type-row { display: flex; gap: 8px; margin-top: 14px; }
+  .type-row input {
+    flex: 1; min-width: 0; background: var(--inset); color: var(--ink); border: 1px solid var(--line);
+    border-radius: var(--r-sm); padding: 8px 11px; font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .type-row input::placeholder { color: var(--faint); font-family: system-ui, sans-serif; }
+  .type-msg { min-height: 18px; margin: 6px 2px 0; font-size: 12.5px; color: var(--bad); }
+
+  /* ---- deck picker ---- */
+  .deck { display: grid; gap: 8px; }
+  .deck-row { display: grid; grid-template-columns: 22px repeat(13, minmax(0, 1fr)); gap: 5px; align-items: center; }
+  .deck-row .suit { font-size: 17px; text-align: center; color: var(--muted); }
+  .deck-row .suit.red { color: var(--face-red); }
+  .deck .pcard { width: 100%; border-radius: 5px; }
+  .deck .pcard .idx { top: 3px; left: 4px; font-size: 12px; }
+  .deck .pcard .idx i { font-size: 10px; }
+  .deck .pcard .pip { font-size: 17px; padding-top: 10px; }
+  .deck .pcard:hover:not(:disabled) { transform: translateY(-2px); }
+  .deck .pcard.taken { opacity: .18; box-shadow: none; }
+  .deck .pcard:disabled { cursor: not-allowed; }
+  @media (max-width: 600px) {
+    .deck-row { grid-template-columns: 16px repeat(13, minmax(0, 1fr)); gap: 3px; }
+    .deck .pcard .pip { display: none; }
+    .deck .pcard .idx { font-size: 11px; left: 3px; }
+  }
+
+  /* ---- result ---- */
+  .result { position: sticky; top: 20px; }
+  .verdict { border-radius: var(--r-md); padding: 16px; background: var(--inset); border: 1px solid var(--line); }
+  .verdict.win { border-color: rgba(70,201,111,.5); background: linear-gradient(160deg, rgba(70,201,111,.16), rgba(70,201,111,.04)); }
+  .verdict .big { font-size: 40px; font-weight: 750; line-height: 1.05; font-variant-numeric: tabular-nums; }
+  .verdict.win .big { color: var(--good); font-size: 30px; }
+  .verdict .sub { color: var(--muted); font-size: 13.5px; margin-top: 4px; }
+  .progress { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin-top: 12px; }
+  .progress div { height: 100%; background: var(--primary); transition: width .2s; }
+
+  .section-label { font-size: 11.5px; font-weight: 650; letter-spacing: .6px; text-transform: uppercase; color: var(--faint); margin: 18px 0 8px; }
+  .meld { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .meld:first-of-type { border-top: 0; }
+  .meld .label { width: 70px; flex: 0 0 auto; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+  .meld .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+  .meld .label b { color: var(--ink); font-weight: 650; }
+  /* melds fan out: --step is how far apart card edges are (36px card + 4px gap when there's room) */
+  .cards-sm { display: flex; min-width: 0; }
+  .cards-sm .pcard + .pcard { margin-left: calc(var(--step, 40px) - 36px); }
+  .discard-row { display: flex; align-items: center; gap: 12px; }
+  .discard-row p { margin: 0; font-size: 13px; color: var(--muted); }
+  .scoring { display: flex; flex-wrap: wrap; gap: 6px; }
+  .scoring .item { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .scoring .item > span { font-size: 11.5px; font-weight: 650; color: var(--bad); font-variant-numeric: tabular-nums; }
+  .sum { margin-top: 8px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .rules { margin: 14px 0 0; padding: 0 0 0 18px; color: var(--muted); font-size: 13px; }
+  .rules li { margin: 3px 0; }
+  .error { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="topbar">
+    <div class="mark" aria-hidden="true"><span>♥</span></div>
+    <div>
+      <h1>Rummy Hand Checker</h1>
+      <p class="tagline">Pick 13 cards, or 14 after a draw. The engine finds the lowest-scoring arrangement.</p>
+    </div>
+  </header>
+
+  <main class="app">
+    <div>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Your hand</h2>
+          <span class="count" id="count"></span>
+          <span class="spacer"></span>
+          <button class="btn" id="deal13" title="Deal 13 random cards">Deal 13</button>
+          <button class="btn" id="deal14" title="Deal 14 random cards (a hand after drawing)">Deal 14</button>
+          <button class="btn" id="near" title="A random hand built from melds, usually a win or close to one">Near win</button>
+          <button class="btn" id="clear">Clear</button>
+        </div>
+        <div class="tray" id="tray" aria-label="Your hand"></div>
+        <p class="tray-hint">Click a card to put it back. Coloured bars match the melds on the right; red tags are points.</p>
+        <div class="type-row">
+          <input id="typed" autocomplete="off" spellcheck="false"
+                 placeholder="Or type cards and press Enter, e.g. 6h 7h 8h 9h ks">
+          <button class="btn" id="add">Add</button>
+        </div>
+        <p class="type-msg" id="typeMsg" role="status"></p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Deck</h2><span class="count">Click a card to add it to your hand</span></div>
+        <div class="deck" id="deck"></div>
+      </section>
+    </div>
+
+    <aside class="panel result" id="result" aria-live="polite"></aside>
+  </main>
+</div>
+
+<script>
+const SUITS = ["S", "H", "D", "C"];
+const SYMBOL = { S: "♠", H: "♥", D: "♦", C: "♣" };
+const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+const HAND = 13, MAX = 14;
+const MELD_COLORS = ["#5b8cff", "#46c96f", "#c38bff", "#f3c04e", "#4fd1c5"];
+
+// Card ids match the engine: suit * 13 + rank.
+const tok = id => RANKS[id % 13] + SUITS[Math.floor(id / 13)];
+const idOf = t => SUITS.indexOf(t.slice(-1)) * 13 + RANKS.indexOf(t.slice(0, -1));
+const isRed = id => [1, 2].includes(Math.floor(id / 13));
+const handOrder = (a, b) => a - b;   // suit, then rank (ace low)
+
+let hand = [];          // card ids in the order they were added
+let result = null;      // last evaluation, for the hand shown in `resultFor`
+let resultFor = "";
+let evalSeq = 0;
+
+const $ = id => document.getElementById(id);
+
+function cardEl(id, { tag = "button", small = false } = {}) {
+  const el = document.createElement(tag);
+  el.className = "pcard" + (small ? " sm" : "") + (isRed(id) ? " red" : "");
+  const r = RANKS[id % 13], s = SYMBOL[SUITS[Math.floor(id / 13)]];
+  el.innerHTML = `<span class="idx">${r}<i>${s}</i></span><span class="pip">${s}</span>`;
+  el.setAttribute("aria-label", `${r} of ${ {S: "spades", H: "hearts", D: "diamonds", C: "clubs"}[SUITS[Math.floor(id / 13)]] }`);
+  return el;
+}
+
+// ---- deck -------------------------------------------------------------------
+function buildDeck() {
+  const deck = $("deck");
+  SUITS.forEach((s, si) => {
+    const row = document.createElement("div");
+    row.className = "deck-row";
+    row.innerHTML = `<span class="suit${si === 1 || si === 2 ? " red" : ""}">${SYMBOL[s]}</span>`;
+    RANKS.forEach((_, ri) => {
+      const id = si * 13 + ri;
+      const el = cardEl(id);
+      el.dataset.id = id;
+      el.addEventListener("click", () => toggle(id));
+      row.appendChild(el);
+    });
+    deck.appendChild(row);
+  });
+}
+
+function toggle(id) {
+  $("typeMsg").textContent = "";
+  if (hand.includes(id)) hand = hand.filter(c => c !== id);
+  else if (hand.length < MAX) hand.push(id);
+  changed();
+}
+
+// ---- hand tray --------------------------------------------------------------
+function renderTray() {
+  const tray = $("tray");
+  tray.innerHTML = "";
+  const colorOf = {}, pointsOf = {};
+  const current = result && resultFor === key() ? result : null;
+  if (current) {
+    current.melds.forEach((m, i) => m.cards.forEach(t => colorOf[idOf(t)] = MELD_COLORS[i % MELD_COLORS.length]));
+    current.leftovers.forEach(l => pointsOf[idOf(l.card)] = l.value);
+  }
+  [...hand].sort(handOrder).forEach(id => {
+    const el = cardEl(id);
+    el.title = "Click to remove";
+    el.addEventListener("click", () => toggle(id));
+    if (colorOf[id]) el.insertAdjacentHTML("beforeend", `<span class="bar" style="background:${colorOf[id]}"></span>`);
+    if (pointsOf[id] !== undefined) el.insertAdjacentHTML("beforeend", `<span class="tag">${pointsOf[id]}</span>`);
+    if (current && current.discard && idOf(current.discard) === id) {
+      el.classList.add("discard");
+      el.insertAdjacentHTML("beforeend", `<span class="tag">throw</span>`);
+    }
+    tray.appendChild(el);
+  });
+  for (let i = hand.length; i < HAND; i++) {
+    const slot = document.createElement("div");
+    slot.className = "slot";
+    tray.appendChild(slot);
+  }
+  const n = hand.length;
+  $("count").innerHTML = n === MAX ? `<b>14</b> cards · after a draw` : `<b>${n}</b> / 13`;
+}
+
+function renderDeck() {
+  document.querySelectorAll("#deck .pcard").forEach(el => {
+    const id = +el.dataset.id, taken = hand.includes(id);
+    el.classList.toggle("taken", taken);
+    el.disabled = !taken && hand.length >= MAX;
+    el.title = taken ? "In your hand (click to remove)" : "Add to hand";
+  });
+}
+
+// ---- result panel -----------------------------------------------------------
+function renderResult(error) {
+  const box = $("result");
+  const n = hand.length;
+  if (error) {
+    box.innerHTML = `<div class="verdict"><div class="sub error">${error}</div></div>`;
+    return;
+  }
+  if (n < HAND) {
+    box.innerHTML = `
+      <div class="verdict">
+        <div class="big">${HAND - n}</div>
+        <div class="sub">more card${HAND - n === 1 ? "" : "s"} to pick</div>
+        <div class="progress"><div style="width:${n / HAND * 100}%"></div></div>
+      </div>
+      <div class="section-label">How a hand is scored</div>
+      <ul class="rules">
+        <li><b>Win</b>: all 13 cards in melds, with at least one run of 4 or more.</li>
+        <li><b>Run</b>: 3+ cards of one suit in a row. Ace is low or high, never K-A-2.</li>
+        <li><b>Set</b>: 3 or 4 cards of one rank, all different suits.</li>
+        <li>No run of 4+? Every card counts. A, 10, J, Q, K are 10; others face value.</li>
+        <li>With 14 cards the engine also picks the best card to throw.</li>
+      </ul>`;
+    return;
+  }
+  if (!result || resultFor !== key()) return;   // evaluation in flight
+  const r = result;
+  let html = r.win
+    ? `<div class="verdict win"><div class="big">Winning hand</div>
+         <div class="sub">Every card is in a meld, with a run of 4+. You can declare.</div></div>`
+    : `<div class="verdict"><div class="big">${r.score}</div>
+         <div class="sub">points, not a win · ${r.melds.length
+           ? "melded cards score 0, only the leftovers count"
+           : "no run of 4 or more, so every card counts (full count)"}</div></div>`;
+
+  if (r.discard) {
+    html += `<div class="section-label">Throw</div><div class="discard-row" id="discardSlot"><p>Best card to discard. The rest is the 13 you keep.</p></div>`;
+  }
+  if (r.melds.length) {
+    html += `<div class="section-label">Melds</div><div id="melds"></div>`;
+  }
+  if (r.leftovers.length) {
+    html += `<div class="section-label">Scoring cards</div><div class="scoring" id="scoring"></div>
+             <div class="sum">${r.leftovers.map(l => l.value).join(" + ")} = <b>${r.score}</b></div>`;
+  }
+  box.innerHTML = html;
+
+  if (r.discard) $("discardSlot").prepend(cardEl(idOf(r.discard), { tag: "div", small: true }));
+  r.melds.forEach((m, i) => {
+    const row = document.createElement("div");
+    row.className = "meld";
+    const label = i === 0 ? "4+ run" : m.kind;
+    row.innerHTML = `<div class="label"><span class="dot" style="background:${MELD_COLORS[i % MELD_COLORS.length]}"></span>
+                     <span><b>${label[0].toUpperCase() + label.slice(1)}</b><br>${m.cards.length} cards</span></div>`;
+    const cards = document.createElement("div");
+    cards.className = "cards-sm";
+    cards.style.setProperty("--step", Math.min(40, Math.floor(204 / (m.cards.length - 1))) + "px");
+    m.cards.map(idOf).forEach(id => cards.appendChild(cardEl(id, { tag: "div", small: true })));
+    // A run that reaches the king plays its ace high: show it last.
+    if (m.kind === "run" && m.cards.some(t => t.startsWith("K")) && m.cards.some(t => t.startsWith("A"))) {
+      cards.appendChild(cards.firstElementChild);
+    }
+    row.appendChild(cards);
+    $("melds").appendChild(row);
+  });
+  r.leftovers.forEach(l => {
+    const item = document.createElement("div");
+    item.className = "item";
+    item.appendChild(cardEl(idOf(l.card), { tag: "div", small: true }));
+    item.insertAdjacentHTML("beforeend", `<span>${l.value}</span>`);
+    $("scoring").appendChild(item);
+  });
+}
+
+// ---- evaluation -------------------------------------------------------------
+const key = () => [...hand].sort(handOrder).join(",");
+
+async function evaluate() {
+  const k = key(), seq = ++evalSeq;
+  try {
+    const res = await fetch("/api/evaluate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cards: [...hand].sort(handOrder).map(tok) }),
+    });
+    const body = await res.json();
+    if (seq !== evalSeq) return;
+    if (!res.ok) return renderResult(body.detail || "The engine rejected this hand.");
+    result = body; resultFor = k;
+    renderTray(); renderResult();
+  } catch {
+    if (seq === evalSeq) renderResult("Can't reach the engine. Is serve/app.py running?");
+  }
+}
+
+function changed() {
+  renderTray(); renderDeck(); renderResult();
+  const h = [...hand].sort(handOrder).map(tok).join("-");
+  history.replaceState(null, "", h ? "#" + h : location.pathname);
+  if (hand.length >= HAND) evaluate();
+}
+
+// ---- typing -----------------------------------------------------------------
+function parseTyped(text) {
+  const out = [], bad = [];
+  const suitOf = { S: "S", H: "H", D: "D", C: "C", "♠": "S", "♥": "H", "♦": "D", "♣": "C" };
+  for (let t of text.toUpperCase().split(/[\s,]+/).filter(Boolean)) {
+    const s = suitOf[t.slice(-1)];
+    let r = t.slice(0, -1);
+    if (r === "T" || r === "1") r = "10";
+    if (!s || !RANKS.includes(r)) { bad.push(t); continue; }
+    out.push(SUITS.indexOf(s) * 13 + RANKS.indexOf(r));
+  }
+  return { out, bad };
+}
+
+function addTyped() {
+  const input = $("typed");
+  const { out, bad } = parseTyped(input.value);
+  const msgs = [];
+  if (bad.length) msgs.push(`Didn't understand ${bad.join(", ")}. Use rank + suit, like 10h or qs.`);
+  let skipped = 0;
+  for (const id of out) {
+    if (hand.includes(id)) continue;
+    if (hand.length >= MAX) { skipped++; continue; }
+    hand.push(id);
+  }
+  if (skipped) msgs.push(`Hand is full (14 cards); ${skipped} not added.`);
+  $("typeMsg").textContent = msgs.join(" ");
+  input.value = bad.join(" ");   // keep only what needs fixing
+  changed();
+}
+
+// ---- random hands -----------------------------------------------------------
+const rand = n => Math.floor(Math.random() * n);
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = rand(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+const deal = n => shuffle([...Array(52).keys()]).slice(0, n);
+
+// Built from random runs and sets, then one card swapped most of the time, so
+// it lands on wins and near-wins (uniform deals almost never do).
+function nearWin() {
+  const used = new Set();
+  while (used.size < HAND) {
+    const room = HAND - used.size;
+    let pick = null;
+    for (let t = 0; t < 50 && !pick; t++) {
+      let c;
+      if (Math.random() < 0.6) {
+        const len = 3 + rand(4), start = rand(14 - len + 1), s = rand(4);
+        c = Array.from({ length: len }, (_, i) => s * 13 + (start + i) % 13);
+      } else {
+        const r = rand(13);
+        c = shuffle([0, 1, 2, 3]).slice(0, 3 + rand(2)).map(s => s * 13 + r);
+      }
+      if (c.length <= room && c.every(x => !used.has(x))) pick = c;
+    }
+    (pick || [deal(52).find(x => !used.has(x))]).forEach(x => used.add(x));
+  }
+  const cards = [...used];
+  if (Math.random() < 0.7) cards[rand(cards.length)] = deal(52).find(x => !used.has(x));
+  return cards;
+}
+
+// ---- wiring -----------------------------------------------------------------
+$("deal13").onclick = () => { hand = deal(13); changed(); };
+$("deal14").onclick = () => { hand = deal(14); changed(); };
+$("near").onclick = () => { hand = nearWin(); changed(); };
+$("clear").onclick = () => { hand = []; $("typeMsg").textContent = ""; changed(); };
+$("add").onclick = addTyped;
+$("typed").addEventListener("keydown", e => {
+  if (e.key === "Enter") addTyped();
+  else if (e.key === "Backspace" && !e.target.value && hand.length) { hand.pop(); changed(); }
+});
+
+// The URL holds the hand (#6H-7H-...), so a hand can be bookmarked or shared.
+function loadHash() {
+  const tokens = decodeURIComponent(location.hash.slice(1)).split("-").filter(Boolean);
+  hand = [...new Set(parseTyped(tokens.join(" ")).out)].slice(0, MAX);
+  changed();
+}
+window.addEventListener("hashchange", loadHash);
+
+buildDeck();
+loadHash();
+</script>
+</body>
+</html>
