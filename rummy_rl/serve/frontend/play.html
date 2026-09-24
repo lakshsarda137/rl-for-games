@@ -186,7 +186,8 @@
   /* hand result, drawn over the table */
   .result {
     position: absolute; inset: 0; border-radius: var(--r-lg); padding: 22px; overflow: auto;
-    background: rgba(11, 13, 17, .93); backdrop-filter: blur(2px);
+    z-index: 10;   /* above the point tags on your cards underneath */
+    background: rgba(11, 13, 17, .96); backdrop-filter: blur(3px);
     display: flex; flex-direction: column; gap: 14px;
   }
   .result h2 { margin: 0; font-size: 24px; }

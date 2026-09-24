@@ -195,9 +195,13 @@ def test_turn_cap():
     states = [env.state(i) for i in range(16)]
     capped = [s for s in states if s["capped"]]
     check("T9.1: the turn cap ends hands", len(capped) > 0 and all(s["turn"] == 6 for s in capped))
-    check("T9.1: a capped hand is a draw with no points",
-          all(s["winner"] == -1 for s in capped) and
-          all(total[i].sum() == 0 for i in range(16)))
+    ok = True
+    for i, s in enumerate(states):
+        if not s["capped"]:
+            continue
+        pay = [score_hand(sum(1 << c for c in s["hands"][p]))[1] for p in (0, 1)]
+        ok &= s["winner"] == -1 and list(s["cap_scores"]) == pay and list(total[i]) == [pay[1] - pay[0], pay[0] - pay[1]]
+    check("T9.1: a capped hand scores both players as if caught; reward = their points - yours", ok)
 
 
 def test_observation_hides_opponent():

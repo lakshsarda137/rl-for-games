@@ -19,6 +19,8 @@
 #include <pybind11/stl.h>
 
 #include <algorithm>
+#include <cmath>
+#include <random>
 #include <cstdlib>
 #include <cstdint>
 #include <stdexcept>
@@ -35,6 +37,7 @@ static constexpr int ACT_PILE = 53;
 static constexpr int N_ACTIONS = 54;
 static constexpr int N_PLANES = 10;
 static constexpr int N_SCALARS = 6;
+static constexpr float VALUE_SCALE = 130.f;  // most points a hand can cost (13 cards x 10)
 static constexpr u64 ALL_CARDS = (u64(1) << N_CARDS) - 1;
 
 static inline int card_value(int c) {  // R6.3
@@ -238,11 +241,13 @@ struct Game {
     u64 discarded_by[2];      // cards p threw this hand
     u64 taken_by[2];          // cards p took from the pile this hand
     u64 recycled;             // cards shuffled back into the draw pile
+    u64 last_recycled;        // cards that went into the draw pile at the latest reshuffle
     // Result
     int winner;               // -1 while playing, or when the turn cap ends the hand
     int points;               // loser's score (R6.2)
     int declare_card;         // card thrown when declaring, -1 if none
     bool capped;
+    int cap_score[2];         // T9.1: what each player would pay if caught when the turn cap hit
     u64 rng;
 };
 
@@ -272,9 +277,11 @@ static void reset_game(Game& g, u64 seed, int first) {
 static void reshuffle(Game& g) {
     int top = g.pile[g.n_pile - 1];
     g.n_stock = 0;
+    g.last_recycled = 0;
     for (int i = 0; i < g.n_pile - 1; ++i) {
         g.stock[g.n_stock++] = g.pile[i];
         g.recycled |= bit(g.pile[i]);
+        g.last_recycled |= bit(g.pile[i]);
     }
     for (int i = g.n_stock - 1; i > 0; --i) std::swap(g.stock[i], g.stock[below(g.rng, i + 1)]);
     g.pile[0] = uint8_t(top);
@@ -340,12 +347,22 @@ static bool apply_action(Game& g, int a, int turn_cap) {
     g.to_move = 1 - p;
     g.phase = DRAW;
     g.turn++;
-    if (turn_cap > 0 && g.turn >= turn_cap) {  // T9.1
+    if (turn_cap > 0 && g.turn >= turn_cap) {  // T9.1: score both hands as if caught
         g.phase = OVER;
         g.capped = true;
+        g.cap_score[0] = score13(g.hand[0]);
+        g.cap_score[1] = score13(g.hand[1]);
         return true;
     }
     return false;
+}
+
+// Points player p gains (+) or loses (-) from a finished hand (T9.2). A hand
+// ended by the turn cap scores both players as if caught (T9.1).
+static float hand_reward(const Game& g, int p) {
+    if (g.capped) return float(g.cap_score[1 - p] - g.cap_score[p]);
+    if (g.winner < 0) return 0.f;
+    return g.winner == p ? float(g.points) : -float(g.points);
 }
 
 // Every rule the state must obey. Returns "" when all hold.
@@ -355,6 +372,7 @@ static std::string validate_game(const Game& g) {
     for (int i = 0; i < g.n_pile; ++i) pile_mask |= bit(g.pile[i]);
     if (popcount(stock_mask) != g.n_stock) return "duplicate card in the draw pile";
     if (popcount(pile_mask) != g.n_pile) return "duplicate card in the discard pile";
+    if (g.reshuffles && (stock_mask & ~g.last_recycled)) return "draw pile holds a card that wasn't reshuffled into it";
     if (pile_mask != g.pile_mask) return "discard pile mask out of date";
     u64 parts[4] = {g.hand[0], g.hand[1], stock_mask, pile_mask};
     u64 seen = 0;
@@ -381,6 +399,8 @@ static std::string validate_game(const Game& g) {
         if (g.pile[g.n_pile - 1] != g.declare_card) return "declare card is not on top of the pile";
     }
     if (g.phase == OVER && g.capped && g.winner != -1) return "capped hand has a winner";
+    if (g.phase == OVER && g.capped && (g.cap_score[0] != score13(g.hand[0]) || g.cap_score[1] != score13(g.hand[1])))
+        return "capped hand scored wrongly";
     return "";
 }
 
@@ -442,6 +462,198 @@ static int random_action(const Game& g, u64& rng) {
     int k = below(rng, popcount(h));
     for (; k > 0; --k) h &= h - 1;
     return lowest(h);
+}
+
+// --------------------------------------------------------------------------- //
+// What a player sees (R8)
+// --------------------------------------------------------------------------- //
+
+// Observation of game g for the player to move:
+//   planes [10][52]: 0 my hand, 1 top of the discard pile, 2 whole discard pile,
+//       3 cards the opponent is known to hold, 4 cards the opponent threw,
+//       5 cards the opponent took from the pile, 6 cards I threw,
+//       7 cards that went into the draw pile at the latest reshuffle,
+//       8 cards I can't locate, 9 the card I just drew (discard phase only)
+//   scalars [6]: draw phase?, draw pile size / 52, discard pile size / 52,
+//       turn / 200, reshuffles, drew from the discard pile this turn?
+//   legal [54] (optional): which actions are allowed.
+static void fill_obs(const Game& g, float* P, float* S, bool* legal) {
+    int p = g.to_move, o = 1 - p;
+    u64 top = g.n_pile ? bit(g.pile[g.n_pile - 1]) : 0;
+    u64 drawn = (g.phase == DISCARD && g.drawn >= 0) ? bit(g.drawn) : 0;
+    u64 masks[N_PLANES] = {
+        g.hand[p], top, g.pile_mask, g.held_known[o], g.discarded_by[o], g.taken_by[o],
+        g.discarded_by[p], g.last_recycled, ALL_CARDS & ~(g.hand[p] | g.pile_mask | g.held_known[o]), drawn,
+    };
+    for (int k = 0; k < N_PLANES; ++k)
+        for (int c = 0; c < N_CARDS; ++c) P[k * N_CARDS + c] = (masks[k] >> c & 1) ? 1.f : 0.f;
+    S[0] = g.phase == DRAW ? 1.f : 0.f;
+    S[1] = g.n_stock / 52.f;
+    S[2] = g.n_pile / 52.f;
+    S[3] = g.turn / 200.f;
+    S[4] = float(g.reshuffles);
+    S[5] = g.drew_from_pile ? 1.f : 0.f;
+    if (legal) {
+        for (int a = 0; a < N_ACTIONS; ++a) legal[a] = false;
+        if (g.phase == DRAW) legal[ACT_STOCK] = legal[ACT_PILE] = true;
+        else if (g.phase == DISCARD)
+            for (u64 h = g.hand[p]; h; h &= h - 1) legal[lowest(h)] = true;
+    }
+}
+
+static std::vector<int> card_list(u64 m) {
+    std::vector<int> v;
+    for (; m; m &= m - 1) v.push_back(lowest(m));
+    return v;
+}
+
+static py::dict state_dict(const Game& g) {
+    py::dict d;
+    d["hands"] = py::make_tuple(card_list(g.hand[0]), card_list(g.hand[1]));
+    d["draw_pile"] = std::vector<int>(g.stock, g.stock + g.n_stock);
+    d["discard_pile"] = std::vector<int>(g.pile, g.pile + g.n_pile);
+    d["to_move"] = g.to_move;
+    d["phase"] = std::string(g.phase == DRAW ? "draw" : g.phase == DISCARD ? "discard" : "over");
+    d["turn"] = g.turn;
+    d["reshuffles"] = g.reshuffles;
+    d["drawn"] = g.drawn;
+    d["drew_from_pile"] = g.drew_from_pile;
+    d["held_known"] = py::make_tuple(card_list(g.held_known[0]), card_list(g.held_known[1]));
+    d["discarded_by"] = py::make_tuple(card_list(g.discarded_by[0]), card_list(g.discarded_by[1]));
+    d["taken_by"] = py::make_tuple(card_list(g.taken_by[0]), card_list(g.taken_by[1]));
+    d["recycled"] = card_list(g.recycled);
+    d["last_recycled"] = card_list(g.last_recycled);
+    d["winner"] = g.winner;
+    d["points"] = g.points;
+    d["declare_card"] = g.declare_card;
+    d["capped"] = g.capped;
+    d["cap_scores"] = py::make_tuple(g.cap_score[0], g.cap_score[1]);
+    return d;
+}
+
+// --------------------------------------------------------------------------- //
+// Imagining the hidden cards
+//
+// The player to move can't see the opponent's hand or the order of the draw
+// pile. To look ahead, the search deals those hidden cards out at random in a
+// way that fits everything the player has seen, many times over ("worlds").
+//   * cards the opponent took from the pile and still holds stay in their hand;
+//   * after a reshuffle the draw pile can only hold cards from that reshuffle,
+//     so any other unseen card must be in the opponent's hand;
+//   * the rest of the opponent's hand is picked from the remaining unseen cards,
+//     favouring cards the network thinks they hold (`weight`, one per card);
+//   * whatever is left becomes the draw pile, in random order.
+// --------------------------------------------------------------------------- //
+
+static inline double uniform01(u64& rng) { return (splitmix(rng) >> 11) * (1.0 / 9007199254740992.0); }
+
+static bool sample_world(const Game& g, const float* weight, u64& rng, Game& out) {
+    int p = g.to_move, o = 1 - p;
+    u64 unseen = ALL_CARDS & ~(g.hand[p] | g.pile_mask | g.held_known[o]);
+    u64 can_be_stock = g.reshuffles ? (unseen & g.last_recycled) : unseen;
+    u64 opp = g.held_known[o] | (unseen & ~can_be_stock);
+    int need = popcount(g.hand[o]) - popcount(opp);
+    int m = 0;
+    int cand[N_CARDS];
+    double w[N_CARDS];
+    for (u64 c = can_be_stock; c; c &= c - 1) {
+        cand[m] = lowest(c);
+        w[m] = std::max(weight ? double(weight[cand[m]]) : 1.0, 1e-3);
+        ++m;
+    }
+    if (need < 0 || need > m || m - need != g.n_stock) return false;
+    for (int k = 0; k < need; ++k) {
+        double total = 0;
+        for (int j = 0; j < m; ++j) total += w[j];
+        double r = uniform01(rng) * total;
+        int j = 0;
+        while (j < m - 1 && r >= w[j]) r -= w[j++];
+        opp |= bit(cand[j]);
+        cand[j] = cand[m - 1];
+        w[j] = w[m - 1];
+        --m;
+    }
+    out = g;
+    out.hand[o] = opp;
+    for (int i = m - 1; i > 0; --i) std::swap(cand[i], cand[below(rng, i + 1)]);
+    for (int i = 0; i < m; ++i) out.stock[i] = uint8_t(cand[i]);
+    out.n_stock = m;
+    out.rng = splitmix(rng);  // future reshuffles in this world differ too
+    return true;
+}
+
+// --------------------------------------------------------------------------- //
+// Search (looking ahead)
+//
+// For each game, the search imagines `worlds` versions of the hidden cards and
+// grows a small game tree in each one (Monte Carlo tree search, as in the Othello
+// project). At every position in a tree the network is asked two things: which
+// moves look good (priors) and how the hand will end (value). Each simulation
+// walks down the tree picking moves that look good but haven't been tried much,
+// asks the network about the new position it reaches, and passes the answer back
+// up. The answer is the number of visits each move got at the top, added up over
+// all worlds; the training uses that as the better move choice to learn from.
+// --------------------------------------------------------------------------- //
+
+static constexpr int MAX_LEGAL = 14;
+
+struct Node {
+    Game g;
+    int n = 0;                         // legal actions at this position
+    uint8_t act[MAX_LEGAL];
+    float prior[MAX_LEGAL], N[MAX_LEGAL], W[MAX_LEGAL];
+    int child[MAX_LEGAL];
+    bool expanded = false, terminal = false;
+};
+
+static int legal_actions(const Game& g, uint8_t* out) {
+    if (g.phase == DRAW) {
+        out[0] = ACT_STOCK;
+        out[1] = ACT_PILE;
+        return 2;
+    }
+    int k = 0;
+    for (u64 h = g.hand[g.to_move]; h; h &= h - 1) out[k++] = uint8_t(lowest(h));
+    return k;
+}
+
+// Result of a finished hand for player p, scaled into [-1, 1] (T9.2 / VALUE_SCALE).
+static float final_value(const Game& g, int p) { return hand_reward(g, p) / VALUE_SCALE; }
+
+static void new_node(Node& nd, const Game& g) {
+    nd.g = g;
+    nd.n = g.phase == OVER ? 0 : legal_actions(g, nd.act);
+    for (int k = 0; k < nd.n; ++k) {
+        nd.prior[k] = nd.N[k] = nd.W[k] = 0.f;
+        nd.child[k] = -1;
+    }
+    nd.expanded = false;
+    nd.terminal = g.phase == OVER;
+}
+
+// Priors from a network row over all 54 actions, renormalised over the legal ones.
+static void set_priors(Node& nd, const float* row) {
+    float total = 0.f;
+    for (int k = 0; k < nd.n; ++k) total += (nd.prior[k] = std::max(row[nd.act[k]], 0.f));
+    for (int k = 0; k < nd.n; ++k) nd.prior[k] = total > 0.f ? nd.prior[k] / total : 1.f / nd.n;
+    nd.expanded = true;
+}
+
+static int pick(const Node& nd, float c_puct) {
+    float total = 0.f;
+    for (int k = 0; k < nd.n; ++k) total += nd.N[k];
+    float root = std::sqrt(total + 1.f);
+    int best = 0;
+    float best_score = -1e30f;
+    for (int k = 0; k < nd.n; ++k) {
+        float q = nd.N[k] > 0.f ? nd.W[k] / nd.N[k] : 0.f;
+        float score = q + c_puct * nd.prior[k] * root / (1.f + nd.N[k]);
+        if (score > best_score) {
+            best_score = score;
+            best = k;
+        }
+    }
+    return best;
 }
 
 // --------------------------------------------------------------------------- //
@@ -535,10 +747,7 @@ class Env {
                 if (g.phase == OVER) continue;
                 if (apply_action(g, a(i), turn_cap_)) {
                     d(i) = true;
-                    if (g.winner >= 0) {
-                        r(i, g.winner) = float(g.points);
-                        r(i, 1 - g.winner) = -float(g.points);
-                    }
+                    for (int p = 0; p < 2; ++p) r(i, p) = hand_reward(g, p);
                 }
             }
         }
@@ -561,39 +770,28 @@ class Env {
         return out;
     }
 
-    // What the player to move can see (R8), as 10 card planes [n, 10, 52] and
-    // 6 numbers [n, 6]. Nothing hidden from that player is included.
-    //   planes: 0 my hand, 1 top of discard pile, 2 whole discard pile,
-    //           3 cards the opponent is known to hold, 4 cards the opponent threw,
-    //           5 cards the opponent took from the pile, 6 cards I threw,
-    //           7 cards shuffled back into the draw pile, 8 cards I can't locate,
-    //           9 the card I just drew (discard phase only)
-    //   numbers: draw phase?, draw pile size / 52, discard pile size / 52,
-    //            turn / 200, reshuffles, drew from the discard pile this turn?
+    // What the player to move can see (R8): 10 card planes [n, 10, 52] and 6
+    // numbers [n, 6]. See fill_obs for what each one holds.
     py::tuple observe() const {
         py::array_t<float> planes({size(), N_PLANES, N_CARDS});
         py::array_t<float> scalars({size(), N_SCALARS});
-        auto P = planes.mutable_unchecked<3>();
-        auto S = scalars.mutable_unchecked<2>();
-        for (int i = 0; i < size(); ++i) {
-            const Game& g = games_[i];
-            int p = g.to_move, o = 1 - p;
-            u64 top = g.n_pile ? bit(g.pile[g.n_pile - 1]) : 0;
-            u64 drawn = (g.phase == DISCARD && g.drawn >= 0) ? bit(g.drawn) : 0;
-            u64 masks[N_PLANES] = {
-                g.hand[p], top, g.pile_mask, g.held_known[o], g.discarded_by[o], g.taken_by[o],
-                g.discarded_by[p], g.recycled, ALL_CARDS & ~(g.hand[p] | g.pile_mask | g.held_known[o]), drawn,
-            };
-            for (int k = 0; k < N_PLANES; ++k)
-                for (int c = 0; c < N_CARDS; ++c) P(i, k, c) = (masks[k] >> c & 1) ? 1.f : 0.f;
-            S(i, 0) = g.phase == DRAW ? 1.f : 0.f;
-            S(i, 1) = g.n_stock / 52.f;
-            S(i, 2) = g.n_pile / 52.f;
-            S(i, 3) = g.turn / 200.f;
-            S(i, 4) = float(g.reshuffles);
-            S(i, 5) = g.drew_from_pile ? 1.f : 0.f;
-        }
+        float* P = planes.mutable_data();
+        float* S = scalars.mutable_data();
+        for (int i = 0; i < size(); ++i) fill_obs(games_[i], P + i * N_PLANES * N_CARDS, S + i * N_SCALARS, nullptr);
         return py::make_tuple(planes, scalars);
+    }
+
+    // For each game, the opponent's real hand (from the player to move's side)
+    // as [n, 52] 0/1. This is hidden information: it is only used as the answer
+    // when training the network to guess the opponent's hand.
+    py::array_t<float> opponent_hands() const {
+        py::array_t<float> out({size(), N_CARDS});
+        auto o = out.mutable_unchecked<2>();
+        for (int i = 0; i < size(); ++i) {
+            u64 h = games_[i].hand[1 - games_[i].to_move];
+            for (int c = 0; c < N_CARDS; ++c) o(i, c) = (h >> c & 1) ? 1.f : 0.f;
+        }
+        return out;
     }
 
     py::array_t<int> greedy_actions() const {
@@ -625,31 +823,182 @@ class Env {
     // the web server (which only shows the human what they may see).
     py::dict state(int i) const {
         check(i);
-        const Game& g = games_[i];
-        auto cards = [](u64 m) {
-            std::vector<int> v;
-            for (; m; m &= m - 1) v.push_back(lowest(m));
-            return v;
+        return state_dict(games_[i]);
+    }
+
+    // One imagined version of game i's hidden cards, seen from the player to
+    // move (for tests). weights: 52 numbers, how likely each card is in the
+    // opponent's hand; empty = all equally likely.
+    py::dict sample_world_state(int i, std::vector<float> weights, u64 seed) {
+        check(i);
+        if (!weights.empty() && weights.size() != N_CARDS) throw std::invalid_argument("weights must have 52 entries");
+        Game w;
+        u64 rng = seed;
+        if (!sample_world(games_[i], weights.empty() ? nullptr : weights.data(), rng, w))
+            throw std::runtime_error("hidden cards don't fit what the player has seen");
+        return state_dict(w);
+    }
+
+    // Looks ahead for the player to move in every game where active[i] is true.
+    //   evaluate(planes [L,10,52], scalars [L,6], legal [L,54])
+    //       -> (priors [L,54], values [L], hand_guess [L,52])
+    //   is the network, called once per simulation step for all games at once.
+    //   Values are from the point of view of the player to move, in [-1, 1].
+    // Returns (visits [n,54] summed over worlds, the network's value for each
+    // game's current position [n], its guess of the opponent's hand [n,52]).
+    py::tuple search(py::function evaluate, py::array_t<bool, py::array::c_style | py::array::forcecast> active,
+                     int worlds, int sims, float c_puct, float dir_alpha, float dir_eps, u64 seed) {
+        auto act_in = active.unchecked<1>();
+        if (act_in.shape(0) != size()) throw std::invalid_argument("need one active flag per game");
+        if (worlds < 1 || sims < 0) throw std::invalid_argument("worlds must be >= 1 and sims >= 0");
+        py::array_t<float> visits({size(), N_ACTIONS});
+        py::array_t<float> root_values(size());
+        py::array_t<float> hand_guess({size(), N_CARDS});
+        float* V = visits.mutable_data();
+        float* RV = root_values.mutable_data();
+        float* HG = hand_guess.mutable_data();
+        std::fill(V, V + size_t(size()) * N_ACTIONS, 0.f);
+        std::fill(RV, RV + size(), 0.f);
+        std::fill(HG, HG + size_t(size()) * N_CARDS, 0.f);
+
+        std::vector<int> roots;
+        for (int i = 0; i < size(); ++i)
+            if (act_in(i) && games_[i].phase != OVER) roots.push_back(i);
+        if (roots.empty()) return py::make_tuple(visits, root_values, hand_guess);
+        int R = int(roots.size());
+
+        // Ask the network about all the positions in `games` at once.
+        auto ask = [&](const std::vector<const Game*>& games) {
+            int L = int(games.size());
+            py::array_t<float> planes({L, N_PLANES, N_CARDS});
+            py::array_t<float> scalars({L, N_SCALARS});
+            py::array_t<bool> legal({L, N_ACTIONS});
+            float* P = planes.mutable_data();
+            float* S = scalars.mutable_data();
+            bool* G = legal.mutable_data();
+            for (int j = 0; j < L; ++j)
+                fill_obs(*games[j], P + size_t(j) * N_PLANES * N_CARDS, S + size_t(j) * N_SCALARS, G + size_t(j) * N_ACTIONS);
+            py::tuple out = evaluate(planes, scalars, legal);
+            auto pri = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(out[0]);
+            auto val = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(out[1]);
+            auto hnd = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(out[2]);
+            if (!pri || !val || !hnd || pri.size() != py::ssize_t(L) * N_ACTIONS || val.size() != py::ssize_t(L) || hnd.size() != py::ssize_t(L) * N_CARDS)
+                throw std::runtime_error("evaluate must return priors [L,54], values [L], hand guesses [L,52]");
+            return std::make_tuple(pri, val, hnd);
         };
-        py::dict d;
-        d["hands"] = py::make_tuple(cards(g.hand[0]), cards(g.hand[1]));
-        d["draw_pile"] = std::vector<int>(g.stock, g.stock + g.n_stock);
-        d["discard_pile"] = std::vector<int>(g.pile, g.pile + g.n_pile);
-        d["to_move"] = g.to_move;
-        d["phase"] = std::string(g.phase == DRAW ? "draw" : g.phase == DISCARD ? "discard" : "over");
-        d["turn"] = g.turn;
-        d["reshuffles"] = g.reshuffles;
-        d["drawn"] = g.drawn;
-        d["drew_from_pile"] = g.drew_from_pile;
-        d["held_known"] = py::make_tuple(cards(g.held_known[0]), cards(g.held_known[1]));
-        d["discarded_by"] = py::make_tuple(cards(g.discarded_by[0]), cards(g.discarded_by[1]));
-        d["taken_by"] = py::make_tuple(cards(g.taken_by[0]), cards(g.taken_by[1]));
-        d["recycled"] = cards(g.recycled);
-        d["winner"] = g.winner;
-        d["points"] = g.points;
-        d["declare_card"] = g.declare_card;
-        d["capped"] = g.capped;
-        return d;
+
+        // 1. The real positions: priors, value and the guess of the opponent's hand.
+        std::vector<const Game*> root_games;
+        for (int i : roots) root_games.push_back(&games_[i]);
+        auto [rpri, rval, rhnd] = ask(root_games);
+        std::vector<float> root_row(size_t(R) * N_ACTIONS);
+        std::copy(rpri.data(), rpri.data() + root_row.size(), root_row.begin());
+        for (int r = 0; r < R; ++r) {
+            RV[roots[r]] = rval.data()[r];
+            std::copy(rhnd.data() + size_t(r) * N_CARDS, rhnd.data() + size_t(r + 1) * N_CARDS, HG + size_t(roots[r]) * N_CARDS);
+        }
+
+        // Exploration noise on the real positions' priors (self-play only).
+        std::mt19937_64 gen(seed);
+        if (dir_eps > 0.f) {
+            std::gamma_distribution<double> gamma(dir_alpha, 1.0);
+            for (int r = 0; r < R; ++r) {
+                uint8_t acts[MAX_LEGAL];
+                int n = legal_actions(games_[roots[r]], acts);
+                double noise[MAX_LEGAL], total = 0;
+                for (int k = 0; k < n; ++k) total += (noise[k] = gamma(gen));
+                float* row = root_row.data() + size_t(r) * N_ACTIONS;
+                float legal_total = 0.f;
+                for (int k = 0; k < n; ++k) legal_total += std::max(row[acts[k]], 0.f);
+                for (int k = 0; k < n; ++k) {
+                    float prior = legal_total > 0.f ? std::max(row[acts[k]], 0.f) / legal_total : 1.f / n;
+                    row[acts[k]] = (1.f - dir_eps) * prior + dir_eps * float(noise[k] / (total > 0 ? total : 1.0));
+                }
+            }
+        }
+
+        // 2. One tree per imagined world.
+        int T = R * worlds;
+        std::vector<std::vector<Node>> trees(T);
+        std::vector<int> owner(T);   // player the tree is searching for
+        u64 rng = seed ^ 0xA5A5A5A5DEADBEEFULL;
+        for (int r = 0; r < R; ++r)
+            for (int w = 0; w < worlds; ++w) {
+                int t = r * worlds + w;
+                Game world;
+                if (!sample_world(games_[roots[r]], HG + size_t(roots[r]) * N_CARDS, rng, world))
+                    throw std::runtime_error("hidden cards don't fit what the player has seen");
+                trees[t].reserve(size_t(sims) + 1);
+                trees[t].emplace_back();
+                new_node(trees[t][0], world);
+                set_priors(trees[t][0], root_row.data() + size_t(r) * N_ACTIONS);
+                owner[t] = world.to_move;
+            }
+
+        // 3. Simulations, all trees in step so the network sees one big batch.
+        std::vector<std::vector<std::pair<int, int>>> paths(T);
+        auto backup = [&](int t, float v_owner) {
+            for (auto [node, k] : paths[t]) {
+                Node& nd = trees[t][node];
+                nd.N[k] += 1.f;
+                nd.W[k] += nd.g.to_move == owner[t] ? v_owner : -v_owner;
+            }
+        };
+        std::vector<int> leaf_tree, leaf_node;
+        std::vector<const Game*> leaf_games;
+        for (int s = 0; s < sims; ++s) {
+            leaf_tree.clear();
+            leaf_node.clear();
+            leaf_games.clear();
+            for (int t = 0; t < T; ++t) {
+                auto& tree = trees[t];
+                paths[t].clear();
+                int node = 0;
+                while (true) {
+                    int k = pick(tree[node], c_puct);
+                    paths[t].push_back({node, k});
+                    int next = tree[node].child[k];
+                    if (next < 0) {
+                        Game g2 = tree[node].g;
+                        apply_action(g2, tree[node].act[k], turn_cap_);
+                        next = int(tree.size());
+                        tree.emplace_back();                 // may move nodes: use indices only
+                        new_node(tree[next], g2);
+                        tree[node].child[k] = next;
+                        if (tree[next].terminal) backup(t, final_value(g2, owner[t]));
+                        else {
+                            leaf_tree.push_back(t);
+                            leaf_node.push_back(next);
+                        }
+                        break;
+                    }
+                    node = next;
+                    if (tree[node].terminal) {
+                        backup(t, final_value(tree[node].g, owner[t]));
+                        break;
+                    }
+                }
+            }
+            if (leaf_tree.empty()) continue;
+            for (size_t j = 0; j < leaf_tree.size(); ++j) leaf_games.push_back(&trees[leaf_tree[j]][leaf_node[j]].g);
+            auto [lpri, lval, lhnd] = ask(leaf_games);
+            (void)lhnd;
+            for (size_t j = 0; j < leaf_tree.size(); ++j) {
+                int t = leaf_tree[j];
+                Node& nd = trees[t][leaf_node[j]];
+                set_priors(nd, lpri.data() + j * N_ACTIONS);
+                float v = lval.data()[j];                     // for the leaf's player to move
+                backup(t, nd.g.to_move == owner[t] ? v : -v);
+            }
+        }
+
+        // 4. Add up the visits at the top of every world's tree.
+        for (int r = 0; r < R; ++r)
+            for (int w = 0; w < worlds; ++w) {
+                const Node& root = trees[r * worlds + w][0];
+                for (int k = 0; k < root.n; ++k) V[size_t(roots[r]) * N_ACTIONS + root.act[k]] += root.N[k];
+            }
+        return py::make_tuple(visits, root_values, hand_guess);
     }
 
     // Rule checks for every game; returns a list of "game i: problem" strings.
@@ -665,7 +1014,7 @@ class Env {
     // Plays full hands bot vs bot inside C++ (no Python per move) for benchmarks
     // and stress tests. bots[s] is "greedy" or "random" for seat s. Returns
     // (hands finished, total turns, seat-0 wins, seat-1 wins, capped, seat-0 net
-    // points, rule violations found).
+    // points including capped hands (T9.1), rule violations found).
     py::tuple play(int hands, const std::string& bot0, const std::string& bot1, bool check_rules) {
         bool greedy[2] = {bot0 == "greedy", bot1 == "greedy"};
         for (const std::string* b : {&bot0, &bot1})
@@ -690,10 +1039,8 @@ class Env {
                     ++finished;
                     turns += g.turn;
                     if (g.capped) ++capped;
-                    else {
-                        wins[g.winner]++;
-                        net0 += g.winner == 0 ? g.points : -g.points;
-                    }
+                    else wins[g.winner]++;
+                    net0 += (long long)hand_reward(g, 0);
                     if (started < hands) reset(i, (started++) & 1, -1);
                     else { active[i] = false; --live; }
                 }
@@ -737,6 +1084,7 @@ PYBIND11_MODULE(rummy_native, m) {
     m.attr("N_ACTIONS") = N_ACTIONS;
     m.attr("N_PLANES") = N_PLANES;
     m.attr("N_SCALARS") = N_SCALARS;
+    m.attr("VALUE_SCALE") = VALUE_SCALE;
 
     m.def("score_hand", [](u64 mask) {
         int s = score13(mask_arg(mask, 13));
@@ -771,6 +1119,10 @@ PYBIND11_MODULE(rummy_native, m) {
         .def("phase", &Env::phase)
         .def("done", &Env::done)
         .def("state", &Env::state)
+        .def("opponent_hands", &Env::opponent_hands)
+        .def("sample_world", &Env::sample_world_state, py::arg("i"), py::arg("weights") = std::vector<float>{}, py::arg("seed") = 0)
+        .def("search", &Env::search, py::arg("evaluate"), py::arg("active"), py::arg("worlds") = 8, py::arg("sims") = 32,
+             py::arg("c_puct") = 1.5f, py::arg("dir_alpha") = 0.5f, py::arg("dir_eps") = 0.f, py::arg("seed") = 0)
         .def("validate", &Env::validate)
         .def("play", &Env::play, py::arg("hands"), py::arg("bot0"), py::arg("bot1"), py::arg("check_rules") = false);
 }
