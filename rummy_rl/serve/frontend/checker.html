@@ -43,6 +43,11 @@
   }
   h1 { font-size: 21px; margin: 0; letter-spacing: .2px; font-weight: 650; }
   .tagline { margin: 1px 0 0; color: var(--muted); font-size: 13px; }
+  .nav-link {
+    margin-left: auto; text-decoration: none; color: var(--ink); background: var(--card);
+    border: 1px solid var(--line); padding: 8px 13px; border-radius: var(--r-sm); font-size: 13.5px; font-weight: 550;
+  }
+  .nav-link:hover { border-color: var(--line-2); background: var(--card-2); }
 
   /* ---- layout ---- */
   .app { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 22px; align-items: start; }
@@ -162,6 +167,7 @@
       <h1>Rummy Hand Checker</h1>
       <p class="tagline">Pick 13 cards, or 14 after a draw. The engine finds the lowest-scoring arrangement.</p>
     </div>
+    <a class="nav-link" href="/">Play against the bot</a>
   </header>
 
   <main class="app">
@@ -278,7 +284,7 @@ function renderTray() {
     tray.appendChild(slot);
   }
   const n = hand.length;
-  $("count").innerHTML = n === MAX ? `<b>14</b> cards · after a draw` : `<b>${n}</b> / 13`;
+  $("count").innerHTML = n === MAX ? `<b>14</b> cards (after a draw)` : `<b>${n}</b> / 13`;
 }
 
 function renderDeck() {
@@ -321,9 +327,9 @@ function renderResult(error) {
     ? `<div class="verdict win"><div class="big">Winning hand</div>
          <div class="sub">Every card is in a meld, with a run of 4+. You can declare.</div></div>`
     : `<div class="verdict"><div class="big">${r.score}</div>
-         <div class="sub">points, not a win · ${r.melds.length
-           ? "melded cards score 0, only the leftovers count"
-           : "no run of 4 or more, so every card counts (full count)"}</div></div>`;
+         <div class="sub">points. Not a win yet. ${r.melds.length
+           ? "Cards in melds score 0, so only the leftover cards count."
+           : "There is no run of 4 or more, so every card counts."}</div></div>`;
 
   if (r.discard) {
     html += `<div class="section-label">Throw</div><div class="discard-row" id="discardSlot"><p>Best card to discard. The rest is the 13 you keep.</p></div>`;
@@ -420,6 +426,7 @@ function addTyped() {
   $("typeMsg").textContent = msgs.join(" ");
   input.value = bad.join(" ");   // keep only what needs fixing
   changed();
+  input.focus();                 // keep typing without clicking back in
 }
 
 // ---- random hands -----------------------------------------------------------
@@ -458,6 +465,7 @@ $("deal14").onclick = () => { hand = deal(14); changed(); };
 $("near").onclick = () => { hand = nearWin(); changed(); };
 $("clear").onclick = () => { hand = []; $("typeMsg").textContent = ""; changed(); };
 $("add").onclick = addTyped;
+$("add").addEventListener("mousedown", e => e.preventDefault());   // clicking Add keeps focus in the box
 $("typed").addEventListener("keydown", e => {
   if (e.key === "Enter") addTyped();
   else if (e.key === "Backspace" && !e.target.value && hand.length) { hand.pop(); changed(); }

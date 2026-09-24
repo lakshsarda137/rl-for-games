@@ -22,6 +22,7 @@ A turn is always one draw followed by one discard.
 - **R3.2 Discard.** Place one of the 14 cards face up on the discard pile. The player now holds 13 cards.
 - **R3.3** The card taken from the discard pile may be discarded again on the same turn.
 - **R3.4 Declare.** Instead of a plain discard, the player may discard and declare, if the 13 cards left in hand form a valid hand (R5). Declaring ends the hand immediately.
+  The engine declares automatically: as soon as a draw makes a valid declare possible, it throws the spare card and declares, because declaring is always the best move.
 - **R3.5** A player can only declare on their own turn, after drawing. Being dealt a valid hand does not end the game; the player must still draw and discard.
 - **R3.6** The first player may take the face-up card from R2.2 on their first turn.
 
