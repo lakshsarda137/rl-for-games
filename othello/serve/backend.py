@@ -41,6 +41,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -645,6 +646,10 @@ def _trim_tourneys():
 
 
 app = FastAPI(title="Othello")
+# The portfolio homepage embeds a playable board that calls these endpoints.
+app.add_middleware(CORSMiddleware,
+                   allow_origins=["https://lakshsarda.com", "https://www.lakshsarda.com"],
+                   allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 _GAMES = {}
 
 
