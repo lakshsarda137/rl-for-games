@@ -112,6 +112,34 @@ def test_search_takes_a_winning_card():
           int(visits[0].argmax()) == rn.ACT_PILE)
 
 
+def test_search_notices_small_differences():
+    # Player 0 must throw. Throwing KS is slightly better than any other card:
+    # the network says the opponent is a little worse off (-0.05) whenever KS
+    # is on top of the discard pile. That's a 6.5-point edge, small next to the
+    # exploration bonus, so without stretched values the search barely notices.
+    h0 = cards("2S 4S 6S 8S 10S KS 2H 4H 6H 8H 10H QH 2D")
+    h1 = cards("3S 5S 7S 9S JS QS 3H 5H 7H 9H JH KH 3D")
+    pile = cards("5D")
+    ks = parse_card("KS")
+
+    def evaluator(planes, scalars, legal):
+        priors = legal / legal.sum(1, keepdims=True)
+        values = np.where(planes[:, 1, ks] == 1, -0.05, 0.0).astype(np.float32)
+        return priors.astype(np.float32), values, np.ones((len(legal), 52), np.float32)
+
+    shares = {}
+    for stretch in (False, True):
+        env = rn.Env(1, seed=0, turn_cap=0)
+        env.load(0, h0, h1, rest_of_deck(h0, h1, pile), pile, to_move=0)
+        env.step(np.array([rn.ACT_STOCK]))                       # now player 0 throws
+        visits, _, _ = env.search(evaluator, np.array([True]), worlds=4, sims=16, seed=3,
+                                  stretch_values=stretch)
+        shares[stretch] = visits[0, ks] / visits[0].sum()
+    check(f"with stretched values the search favours the slightly better throw "
+          f"({shares[True]:.0%} of visits, vs {shares[False]:.0%} without)",
+          shares[True] > 0.3 and shares[True] > 2 * shares[False])
+
+
 def test_search_is_reproducible():
     a, b = rn.Env(4, seed=9), rn.Env(4, seed=9)
     va, _, _ = a.search(uniform_evaluator, np.ones(4, bool), worlds=2, sims=8, dir_eps=0.25, seed=5)
@@ -196,6 +224,6 @@ def test_training_round_trip():
 
 if __name__ == "__main__":
     run([test_worlds_keep_what_you_can_see, test_worlds_follow_the_hand_guess, test_search_counts,
-         test_search_takes_a_winning_card, test_search_is_reproducible, test_network_shapes,
+         test_search_takes_a_winning_card, test_search_notices_small_differences, test_search_is_reproducible, test_network_shapes,
          test_training_round_trip],
         [], title="AI (search, network, training)")

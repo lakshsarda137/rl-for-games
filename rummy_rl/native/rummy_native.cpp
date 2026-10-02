@@ -639,14 +639,30 @@ static void set_priors(Node& nd, const float* row) {
     nd.expanded = true;
 }
 
-static int pick(const Node& nd, float c_puct) {
+// The lowest and highest move value seen so far in one tree. Hand results are
+// scaled into [-1, 1] by 130 points, so the difference between two moves is
+// often only ~0.05, far smaller than the exploration bonus; the search would
+// then just spread its visits by the priors and teach the network nothing.
+// Stretching values to [0, 1] by the range actually seen makes real
+// differences count (the MuZero fix, Schrittwieser et al. 2020).
+struct ValueRange {
+    float lo = 1e30f, hi = -1e30f;
+    void see(float q) {
+        lo = std::min(lo, q);
+        hi = std::max(hi, q);
+    }
+    float stretch(float q) const { return hi > lo ? (q - lo) / (hi - lo) : q; }
+};
+
+static int pick(const Node& nd, float c_puct, const ValueRange* range) {
     float total = 0.f;
     for (int k = 0; k < nd.n; ++k) total += nd.N[k];
     float root = std::sqrt(total + 1.f);
     int best = 0;
     float best_score = -1e30f;
     for (int k = 0; k < nd.n; ++k) {
-        float q = nd.N[k] > 0.f ? nd.W[k] / nd.N[k] : 0.f;
+        float q = 0.f;   // untried moves start at the bottom of the range
+        if (nd.N[k] > 0.f) q = range ? range->stretch(nd.W[k] / nd.N[k]) : nd.W[k] / nd.N[k];
         float score = q + c_puct * nd.prior[k] * root / (1.f + nd.N[k]);
         if (score > best_score) {
             best_score = score;
@@ -847,7 +863,8 @@ class Env {
     // Returns (visits [n,54] summed over worlds, the network's value for each
     // game's current position [n], its guess of the opponent's hand [n,52]).
     py::tuple search(py::function evaluate, py::array_t<bool, py::array::c_style | py::array::forcecast> active,
-                     int worlds, int sims, float c_puct, float dir_alpha, float dir_eps, u64 seed) {
+                     int worlds, int sims, float c_puct, float dir_alpha, float dir_eps, u64 seed,
+                     bool stretch_values) {
         auto act_in = active.unchecked<1>();
         if (act_in.shape(0) != size()) throw std::invalid_argument("need one active flag per game");
         if (worlds < 1 || sims < 0) throw std::invalid_argument("worlds must be >= 1 and sims >= 0");
@@ -937,11 +954,13 @@ class Env {
 
         // 3. Simulations, all trees in step so the network sees one big batch.
         std::vector<std::vector<std::pair<int, int>>> paths(T);
+        std::vector<ValueRange> ranges(T);
         auto backup = [&](int t, float v_owner) {
             for (auto [node, k] : paths[t]) {
                 Node& nd = trees[t][node];
                 nd.N[k] += 1.f;
                 nd.W[k] += nd.g.to_move == owner[t] ? v_owner : -v_owner;
+                ranges[t].see(nd.W[k] / nd.N[k]);
             }
         };
         std::vector<int> leaf_tree, leaf_node;
@@ -955,7 +974,7 @@ class Env {
                 paths[t].clear();
                 int node = 0;
                 while (true) {
-                    int k = pick(tree[node], c_puct);
+                    int k = pick(tree[node], c_puct, stretch_values ? &ranges[t] : nullptr);
                     paths[t].push_back({node, k});
                     int next = tree[node].child[k];
                     if (next < 0) {
@@ -1122,7 +1141,8 @@ PYBIND11_MODULE(rummy_native, m) {
         .def("opponent_hands", &Env::opponent_hands)
         .def("sample_world", &Env::sample_world_state, py::arg("i"), py::arg("weights") = std::vector<float>{}, py::arg("seed") = 0)
         .def("search", &Env::search, py::arg("evaluate"), py::arg("active"), py::arg("worlds") = 8, py::arg("sims") = 32,
-             py::arg("c_puct") = 1.5f, py::arg("dir_alpha") = 0.5f, py::arg("dir_eps") = 0.f, py::arg("seed") = 0)
+             py::arg("c_puct") = 1.5f, py::arg("dir_alpha") = 0.5f, py::arg("dir_eps") = 0.f, py::arg("seed") = 0,
+             py::arg("stretch_values") = true)
         .def("validate", &Env::validate)
         .def("play", &Env::play, py::arg("hands"), py::arg("bot0"), py::arg("bot1"), py::arg("check_rules") = false);
 }
