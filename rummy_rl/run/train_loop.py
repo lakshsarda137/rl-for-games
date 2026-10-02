@@ -30,7 +30,7 @@ sys.path.insert(0, _HERE)
 from config import Config
 from evaluate import vs_greedy
 from network import Evaluator, RummyNet, pick_device
-from selfplay import play
+from selfplay import play, play_on_gpus
 from train import ReplayBuffer, lr_at_iteration, train_steps
 
 
@@ -65,6 +65,7 @@ def main(argv=None):
     ap.add_argument("--wandb", action="store_true", help="stream metrics to Weights & Biases (needs WANDB_API_KEY)")
     args = ap.parse_args(argv)
 
+    print("Starting rummy training...", flush=True)
     cfg = Config.tiny() if args.tiny else Config.kaggle() if args.kaggle else Config()
     cfg = replace(cfg, device=pick_device(args.device))
     if args.no_hand_guess:
@@ -92,7 +93,25 @@ def main(argv=None):
     buffer = ReplayBuffer(cfg.buffer_size)
     params = sum(p.numel() for p in net.parameters())
     print(f"Run '{run}' on {cfg.device}: {params:,} weights, {cfg.worlds} worlds x {cfg.sims} sims, "
-          f"{cfg.hands_per_iter} hands per iteration, hand guessing {'on' if cfg.use_hand_guess else 'off'}")
+          f"{cfg.hands_per_iter} hands per iteration, hand guessing {'on' if cfg.use_hand_guess else 'off'}", flush=True)
+    progress_file = os.path.join(out_dir, "progress.txt")
+
+    def progress(text):
+        """Print a status line and also save it to progress.txt in the output
+        folder, which Kaggle's Output panel can show while the run is going."""
+        print(text, flush=True)
+        with open(progress_file, "w") as f:
+            f.write(time.strftime("%H:%M:%S ") + text.strip() + "\n")
+    # Several NVIDIA GPUs (Kaggle gives two): self-play on all of them at once,
+    # one worker process per GPU. Training itself stays on the first one.
+    gpus = [f"cuda:{k}" for k in range(torch.cuda.device_count())] if str(cfg.device).startswith("cuda") else []
+    pool = None
+    if len(gpus) > 1:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        pool = ProcessPoolExecutor(max_workers=len(gpus), mp_context=multiprocessing.get_context("spawn"))
+        print(f"Self-play on {len(gpus)} GPUs: {', '.join(torch.cuda.get_device_name(k) for k in range(len(gpus)))}", flush=True)
+
     wandb = None
     if args.wandb:
         import wandb
@@ -100,8 +119,13 @@ def main(argv=None):
 
     for it in range(start, start + iterations):
         t0 = time.time()
-        evaluator = Evaluator(net, cfg.device, use_hand_guess=cfg.use_hand_guess)
-        examples, sp = play(evaluator, cfg, cfg.hands_per_iter, seed=int(rng.integers(1 << 62)))
+        progress(f"iter {it}: self-play started")
+        seed = int(rng.integers(1 << 62))
+        if pool:
+            examples, sp = play_on_gpus(pool, net, gpus, cfg, cfg.hands_per_iter, seed, cfg.use_hand_guess)
+        else:
+            evaluator = Evaluator(net, cfg.device, use_hand_guess=cfg.use_hand_guess)
+            examples, sp = play(evaluator, cfg, cfg.hands_per_iter, seed=seed, progress=progress)
         buffer.add(examples)
         t_play = time.time() - t0
 
@@ -130,7 +154,7 @@ def main(argv=None):
             flat = {k: v for k, v in record.items() if k != "eval"}
             flat.update({f"eval/{k}": v for k, v in record.get("eval", {}).items()})
             wandb.log(flat, step=it)
-        print(line + f"  ({record['total_s']:.0f}s)", flush=True)
+        progress(line + f"  ({record['total_s']:.0f}s)")
 
 
 if __name__ == "__main__":

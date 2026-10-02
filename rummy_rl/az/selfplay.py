@@ -13,6 +13,7 @@ differ; later moves take the most visited move.
 
 import os
 import sys
+import time
 
 import numpy as np
 
@@ -31,8 +32,11 @@ def choose(pi, explore, rng):
     return int(rng.choice(best))
 
 
-def play(evaluator, cfg, n_hands, seed):
-    """Play `n_hands` hands of self-play. Returns (examples dict, stats dict)."""
+def play(evaluator, cfg, n_hands, seed, progress=None):
+    """Play `n_hands` hands of self-play. Returns (examples dict, stats dict).
+
+    progress(text), if given, is called about every 30 seconds with a line
+    saying how far self-play has got, so a long iteration never looks stuck."""
     rng = np.random.default_rng(seed)
     n = min(cfg.selfplay_games, n_hands)
     env = rn.Env(n, seed=seed, turn_cap=cfg.turn_cap)
@@ -42,8 +46,18 @@ def play(evaluator, cfg, n_hands, seed):
     decisions = np.zeros(n, dtype=np.int64)
     out = {k: [] for k in ("planes", "scalars", "legal", "pi", "z", "hand")}
     turns, capped, pile_takes, draws = [], 0, 0, 0
+    t_start = t_report = time.time()
+    moves = 0
 
     while finished < n_hands:
+        if progress and time.time() - t_report > 30:
+            t_report = time.time()
+            rate = moves / (t_report - t_start)
+            live = ~env.done()
+            avg_turn = (decisions[live].mean() / 2) if live.any() else 0
+            progress(f"  self-play: {finished}/{n_hands} hands done, hands in play are at turn "
+                     f"{avg_turn:.0f} on average (limit {cfg.turn_cap}), {rate:.0f} moves/s, "
+                     f"{t_report - t_start:.0f}s so far")
         active = ~env.done()
         planes, scalars = env.observe()
         legal = env.legal_mask()
@@ -58,6 +72,7 @@ def play(evaluator, cfg, n_hands, seed):
             pi = visits[i] / total if total > 0 else legal[i] / legal[i].sum()
             actions[i] = choose(pi, decisions[i] < cfg.temp_moves, rng)
             decisions[i] += 1
+            moves += 1
             pending[i].append((planes[i], scalars[i], legal[i], pi.astype(np.float32), movers[i], opp[i]))
             if scalars[i, 0] == 1:
                 draws += 1
@@ -96,5 +111,48 @@ def play(evaluator, cfg, n_hands, seed):
         "avg_turns": float(np.mean(turns)) if turns else 0.0,
         "capped": int(capped),
         "pile_take_rate": pile_takes / max(draws, 1),
+        "draws": draws,
     }
     return examples, stats
+
+
+# --------------------------------------------------------------------------- #
+# Several GPUs: each one plays its share of the hands in its own process
+# --------------------------------------------------------------------------- #
+
+def _worker(state_dict, net_size, cfg, n_hands, seed, device, use_hand_guess, tag):
+    """Runs in a separate process: rebuild the network on `device` and play."""
+    import torch
+    from network import Evaluator, RummyNet
+
+    torch.set_num_threads(1)
+    net = RummyNet(*net_size)
+    net.load_state_dict(state_dict)
+    report = lambda text: print(f"[{tag}] {text.strip()}", flush=True)
+    return play(Evaluator(net, device, use_hand_guess), cfg, n_hands, seed, progress=report)
+
+
+def merge(results):
+    """Combine (examples, stats) from several workers into one."""
+    examples = {k: np.concatenate([r[0][k] for r in results]) for k in results[0][0]}
+    hands = sum(r[1]["hands"] for r in results)
+    draws = sum(r[1]["draws"] for r in results)
+    stats = {
+        "hands": hands,
+        "positions": sum(r[1]["positions"] for r in results),
+        "avg_turns": sum(r[1]["avg_turns"] * r[1]["hands"] for r in results) / max(hands, 1),
+        "capped": sum(r[1]["capped"] for r in results),
+        "pile_take_rate": sum(r[1]["pile_take_rate"] * r[1]["draws"] for r in results) / max(draws, 1),
+        "draws": draws,
+    }
+    return examples, stats
+
+
+def play_on_gpus(pool, net, devices, cfg, n_hands, seed, use_hand_guess=True):
+    """Split `n_hands` across `devices` (one worker process each) and merge."""
+    state = {k: v.detach().cpu() for k, v in net.state_dict().items()}
+    share = [n_hands // len(devices) + (k < n_hands % len(devices)) for k in range(len(devices))]
+    jobs = [pool.submit(_worker, state, (net.blocks_n, net.channels), cfg, share[k], seed + 7919 * k,
+                        dev, use_hand_guess, f"gpu{k}")
+            for k, dev in enumerate(devices) if share[k] > 0]
+    return merge([j.result() for j in jobs])

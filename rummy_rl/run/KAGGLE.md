@@ -24,8 +24,10 @@ on the GPU, build the C++ engine, and run the training loop.
 !python run_tests.py
 ```
 
-**3. Quick check** (2 iterations, no strength check). Look at the seconds per
-iteration to plan how long the real run will take:
+**3. Quick check** (2 iterations, no strength check). It prints a line right away,
+then a `self-play: ... moves/s` line every 30 seconds, so you can see it's alive.
+Early iterations take several minutes (hands are long while the AI is still bad);
+they get faster as it learns. Look at the seconds per iteration to plan the run:
 ```python
 !python -u run/train_loop.py --kaggle --iterations 2 --eval-every 0 --out /kaggle/working/smoke
 ```
@@ -38,6 +40,7 @@ os.environ["WANDB_API_KEY"] = UserSecretsClient().get_secret("WANDB_API_KEY")   
 
 !python -u run/train_loop.py --kaggle --wandb --resume auto --out /kaggle/working/main
 ```
+The newest status line is also saved to `progress.txt` in the output folder.
 Every 5 iterations it plays 400 hands against the greedy bot on duplicate deals and
 prints `vs greedy: +X.X +/- Y.Y points/hand`. The AI is better than greedy once that
 range sits above zero.

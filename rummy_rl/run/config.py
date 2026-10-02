@@ -15,8 +15,8 @@ class Config:
     channels: int = 64
 
     # Search
-    worlds: int = 8               # imagined versions of the hidden cards per decision
-    sims: int = 32                # look-ahead steps in each world
+    worlds: int = 4               # imagined versions of the hidden cards per decision
+    sims: int = 16                # look-ahead steps in each world
     c_puct: float = 1.5           # how much the search trusts the network's move scores vs. trying new moves
     dir_alpha: float = 0.5        # random noise on the first move scores in self-play, so it explores
     dir_eps: float = 0.25
@@ -24,13 +24,13 @@ class Config:
 
     # Self-play
     selfplay_games: int = 256     # hands played side by side (also the network's batch size)
-    hands_per_iter: int = 512
+    hands_per_iter: int = 256     # small iterations: frequent checkpoints and progress
     turn_cap: int = 200           # T9.1
 
     # Training
     buffer_size: int = 400_000
     batch_size: int = 512
-    steps_per_iter: int = 400
+    steps_per_iter: int = 200
     lr: float = 1e-3
     lr_final: float = 1e-4
     lr_horizon: int = 150         # iteration where the learning rate reaches lr_final
@@ -40,8 +40,8 @@ class Config:
     # Checking strength against the greedy bot
     eval_every: int = 5           # iterations between checks (0 = never)
     eval_pairs: int = 200         # duplicate pairs, so 2x this many hands
-    eval_sims: int = 32
-    eval_worlds: int = 8
+    eval_sims: int = 16
+    eval_worlds: int = 4
 
     device: str = "auto"
     use_hand_guess: bool = True   # False = search imagines hidden cards uniformly (comparison run)
@@ -54,4 +54,4 @@ class Config:
 
     @classmethod
     def kaggle(cls):
-        return replace(cls(), selfplay_games=512, hands_per_iter=1024, steps_per_iter=600)
+        return replace(cls(), selfplay_games=512, hands_per_iter=512, steps_per_iter=300)

@@ -134,6 +134,19 @@ def test_network_shapes():
     grid = torch.zeros(1, 4, 14)
     grid[0, 2, 13] = 1.0     # high ace of diamonds
     check("the high-ace column counts toward the ace", fold_ace(grid)[0, 2 * 13 + 0] == 1.0)
+    from network import fast_copy
+    net.train(False)
+    with torch.no_grad():
+        for p_ in net.parameters():                      # non-trivial BatchNorm statistics
+            p_.add_(torch.randn_like(p_) * 0.1)
+        for m_ in net.modules():
+            if isinstance(m_, torch.nn.BatchNorm2d):
+                m_.running_mean.uniform_(-0.5, 0.5)
+                m_.running_var.uniform_(0.5, 2.0)
+        a = net(torch.from_numpy(planes), torch.from_numpy(scalars))
+        b = fast_copy(net, "cpu")(torch.from_numpy(planes), torch.from_numpy(scalars))
+    diff = max((x - y).abs().max().item() for x, y in zip(a, b))
+    check(f"the fast playing copy gives the same answers (max difference {diff:.1e})", diff < 1e-4)
     priors, values, guess = Evaluator(net)(planes, scalars, env.legal_mask())
     legal = env.legal_mask()
     check("evaluator gives no weight to illegal moves and sums to 1",
