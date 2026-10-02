@@ -94,7 +94,7 @@ What each player knows. The training environment's observation must follow this 
 
 These do not exist in the real game. They only keep self-play finite. The website never uses them.
 
-- **T9.1 Turn cap.** If a hand reaches **200 turns** (both players combined) without a declaration, it ends. Nobody won, so both players are scored as if they had been caught (R6.4), and each one's reward is the other's points minus their own. This gives early training, when play is still close to random and hands rarely end, a useful signal: keep your hand cheap.
+- **T9.1 Turn cap.** If a hand reaches **200 turns** (both players combined) without a declaration, it ends, and it counts as a loss for both: each player pays their own points (R6.4), as if the other had declared. Example: holding 40 and 70 points, the rewards are −40 and −70. Stalling to the limit is therefore never better than losing, and the only way to gain points is to declare. (Not zero-sum: both lose.)
 - **T9.2 Hand reward.** For per-hand training, the reward is the point difference.
   - The winner gets `+` the loser's points.
   - The loser gets `−` their own points.

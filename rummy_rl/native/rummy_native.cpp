@@ -358,9 +358,10 @@ static bool apply_action(Game& g, int a, int turn_cap) {
 }
 
 // Points player p gains (+) or loses (-) from a finished hand (T9.2). A hand
-// ended by the turn cap scores both players as if caught (T9.1).
+// ended by the turn cap is a loss for both: each pays their own points as if
+// the other had declared (T9.1), so stalling to the cap is never a safe choice.
 static float hand_reward(const Game& g, int p) {
-    if (g.capped) return float(g.cap_score[1 - p] - g.cap_score[p]);
+    if (g.capped) return -float(g.cap_score[p]);
     if (g.winner < 0) return 0.f;
     return g.winner == p ? float(g.points) : -float(g.points);
 }
@@ -1033,7 +1034,8 @@ class Env {
     // Plays full hands bot vs bot inside C++ (no Python per move) for benchmarks
     // and stress tests. bots[s] is "greedy" or "random" for seat s. Returns
     // (hands finished, total turns, seat-0 wins, seat-1 wins, capped, seat-0 net
-    // points including capped hands (T9.1), rule violations found).
+    // points, where a capped hand costs seat 0 its own points (T9.1), rule
+    // violations found).
     py::tuple play(int hands, const std::string& bot0, const std::string& bot1, bool check_rules) {
         bool greedy[2] = {bot0 == "greedy", bot1 == "greedy"};
         for (const std::string* b : {&bot0, &bot1})

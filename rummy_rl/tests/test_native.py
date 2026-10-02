@@ -200,8 +200,8 @@ def test_turn_cap():
         if not s["capped"]:
             continue
         pay = [score_hand(sum(1 << c for c in s["hands"][p]))[1] for p in (0, 1)]
-        ok &= s["winner"] == -1 and list(s["cap_scores"]) == pay and list(total[i]) == [pay[1] - pay[0], pay[0] - pay[1]]
-    check("T9.1: a capped hand scores both players as if caught; reward = their points - yours", ok)
+        ok &= s["winner"] == -1 and list(s["cap_scores"]) == pay and list(total[i]) == [-pay[0], -pay[1]]
+    check("T9.1: a capped hand is a loss for both: each pays their own points", ok)
 
 
 def test_observation_hides_opponent():

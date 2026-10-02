@@ -217,6 +217,19 @@ def test_training_round_trip():
         same = all(torch.equal(a, b) for a, b in zip(net.state_dict().values(), loaded.state_dict().values()))
         check("a saved checkpoint loads back identically", same and ckpt["iteration"] == 1)
 
+    def passer(planes, scalars, legal):
+        """Always wants the top discard, then always wants to throw it back."""
+        prefer = legal * 0.01
+        prefer[:, rn.ACT_PILE] += legal[:, rn.ACT_PILE] * 100
+        prefer[:, :52] += planes[:, 9] * 100
+        priors = prefer / prefer.sum(1, keepdims=True)
+        return priors.astype(np.float32), np.zeros(len(legal), np.float32), np.ones((len(legal), 52), np.float32)
+
+    _, stats = play(passer, replace(cfg, temp_moves=0, dir_eps=0.0), n_hands=4, seed=1)
+    check(f"counters spot a player that only passes (passes {stats['pass_rate']:.0%}, "
+          f"declares {stats['declare_rate']:.0%}, takes discard {stats['pile_take_rate']:.0%})",
+          stats["pass_rate"] > 0.9 and stats["declare_rate"] == 0 and stats["pile_take_rate"] > 0.9)
+
     ev = vs_greedy(Evaluator(net), pairs=3, seed=4, sims=0, turn_cap=60)
     check("the greedy check plays duplicate pairs and reports points per hand",
           ev["hands"] == 6 and np.isfinite(ev["points_per_hand"]))

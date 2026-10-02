@@ -149,7 +149,8 @@ def main(argv=None):
 
         line = (f"iter {it:4d}  loss: move {losses['policy']:.3f}  result {losses['value']:.4f}  "
                 f"hand {losses['hand']:.3f}  |  {sp['hands']} hands, {sp['avg_turns']:.0f} turns avg, "
-                f"takes discard {sp['pile_take_rate']:.0%}  |  {t_play:.0f}s play, {t_train:.0f}s learning")
+                f"declares {sp['declare_rate']:.0%}, takes discard {sp['pile_take_rate']:.0%} "
+                f"(passes {sp['pass_rate']:.0%})  |  {t_play:.0f}s play, {t_train:.0f}s learning")
         if cfg.eval_every and it % cfg.eval_every == 0:
             t2 = time.time()
             ev = vs_greedy(Evaluator(net, cfg.device, cfg.use_hand_guess), cfg.eval_pairs,

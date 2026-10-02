@@ -54,7 +54,7 @@ def play(evaluator, cfg, n_hands, seed, progress=None, status=None, tag=""):
     pending = [[] for _ in range(n)]     # this hand's records, per game
     decisions = np.zeros(n, dtype=np.int64)
     out = {k: [] for k in ("planes", "scalars", "legal", "pi", "z", "hand")}
-    turns, capped, pile_takes, draws = [], 0, 0, 0
+    turns, capped, pile_takes, draws, passes = [], 0, 0, 0, 0
     t_start = t_report = time.time()
     moves = 0
 
@@ -86,6 +86,8 @@ def play(evaluator, cfg, n_hands, seed, progress=None, status=None, tag=""):
             if scalars[i, 0] == 1:
                 draws += 1
                 pile_takes += actions[i] == rn.ACT_PILE
+            elif scalars[i, 5] == 1 and planes[i, 9, actions[i]] == 1:
+                passes += 1     # took the top discard and threw that same card straight back
 
         rewards, done = env.step(actions)
         for i in np.flatnonzero(done):
@@ -121,6 +123,9 @@ def play(evaluator, cfg, n_hands, seed, progress=None, status=None, tag=""):
         "capped": int(capped),
         "pile_take_rate": pile_takes / max(draws, 1),
         "draws": draws,
+        "declare_rate": (finished - capped) / max(finished, 1),
+        "pass_rate": passes / max(pile_takes, 1),
+        "pile_takes": int(pile_takes),
     }
     return examples, stats
 
@@ -152,6 +157,10 @@ def merge(results):
         "capped": sum(r[1]["capped"] for r in results),
         "pile_take_rate": sum(r[1]["pile_take_rate"] * r[1]["draws"] for r in results) / max(draws, 1),
         "draws": draws,
+        "declare_rate": sum(r[1]["declare_rate"] * r[1]["hands"] for r in results) / max(hands, 1),
+        "pass_rate": (sum(r[1]["pass_rate"] * r[1]["pile_takes"] for r in results)
+                      / max(sum(r[1]["pile_takes"] for r in results), 1)),
+        "pile_takes": sum(r[1]["pile_takes"] for r in results),
     }
     return examples, stats
 
