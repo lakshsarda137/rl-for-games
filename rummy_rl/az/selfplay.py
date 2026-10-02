@@ -32,12 +32,21 @@ def choose(pi, explore, rng):
     return int(rng.choice(best))
 
 
-def play(evaluator, cfg, n_hands, seed, progress=None):
+def progress_line(fraction, moves_per_s, seconds):
+    return (f"  self-play: {100 * min(fraction, 1):.0f}% done, {moves_per_s:,.0f} moves/s, "
+            f"{seconds:.0f}s so far")
+
+
+def play(evaluator, cfg, n_hands, seed, progress=None, status=None, tag=""):
     """Play `n_hands` hands of self-play. Returns (examples dict, stats dict).
 
     progress(text), if given, is called about every 30 seconds with a line
-    saying how far self-play has got, so a long iteration never looks stuck."""
+    saying how far self-play has got, so a long iteration never looks stuck.
+    status, if given, is a dict shared with the main process: status[tag] is
+    kept up to date as (hands' worth of work done, moves made), so the main
+    process can report one combined line for several GPUs."""
     rng = np.random.default_rng(seed)
+    cap = cfg.turn_cap or 200
     n = min(cfg.selfplay_games, n_hands)
     env = rn.Env(n, seed=seed, turn_cap=cfg.turn_cap)
     started = n
@@ -50,15 +59,15 @@ def play(evaluator, cfg, n_hands, seed, progress=None):
     moves = 0
 
     while finished < n_hands:
+        active = ~env.done()
+        # Work done, in hands: finished hands count 1, a hand in play counts the
+        # share of the turn limit it has used (most early hands run to the limit).
+        done_work = finished + np.minimum(decisions[active] / 2 / cap, 1.0).sum()
+        if status is not None:
+            status[tag] = (float(done_work), moves)
         if progress and time.time() - t_report > 30:
             t_report = time.time()
-            rate = moves / (t_report - t_start)
-            live = ~env.done()
-            avg_turn = (decisions[live].mean() / 2) if live.any() else 0
-            progress(f"  self-play: {finished}/{n_hands} hands done, hands in play are at turn "
-                     f"{avg_turn:.0f} on average (limit {cfg.turn_cap}), {rate:.0f} moves/s, "
-                     f"{t_report - t_start:.0f}s so far")
-        active = ~env.done()
+            progress(progress_line(done_work / n_hands, moves / (t_report - t_start), t_report - t_start))
         planes, scalars = env.observe()
         legal = env.legal_mask()
         opp = env.opponent_hands()
@@ -120,7 +129,7 @@ def play(evaluator, cfg, n_hands, seed, progress=None):
 # Several GPUs: each one plays its share of the hands in its own process
 # --------------------------------------------------------------------------- #
 
-def _worker(state_dict, net_size, cfg, n_hands, seed, device, use_hand_guess, tag):
+def _worker(state_dict, net_size, cfg, n_hands, seed, device, use_hand_guess, tag, status):
     """Runs in a separate process: rebuild the network on `device` and play."""
     import torch
     from network import Evaluator, RummyNet
@@ -128,8 +137,7 @@ def _worker(state_dict, net_size, cfg, n_hands, seed, device, use_hand_guess, ta
     torch.set_num_threads(1)
     net = RummyNet(*net_size)
     net.load_state_dict(state_dict)
-    report = lambda text: print(f"[{tag}] {text.strip()}", flush=True)
-    return play(Evaluator(net, device, use_hand_guess), cfg, n_hands, seed, progress=report)
+    return play(Evaluator(net, device, use_hand_guess), cfg, n_hands, seed, status=status, tag=tag)
 
 
 def merge(results):
@@ -148,11 +156,27 @@ def merge(results):
     return examples, stats
 
 
-def play_on_gpus(pool, net, devices, cfg, n_hands, seed, use_hand_guess=True):
-    """Split `n_hands` across `devices` (one worker process each) and merge."""
+def play_on_gpus(pool, status, net, devices, cfg, n_hands, seed, use_hand_guess=True, progress=None):
+    """Split `n_hands` across `devices` (one worker process each) and merge.
+    `status` is a shared dict (multiprocessing Manager) the workers report into;
+    every 30 seconds progress() gets one line for all GPUs together."""
+    from concurrent.futures import wait
+
     state = {k: v.detach().cpu() for k, v in net.state_dict().items()}
     share = [n_hands // len(devices) + (k < n_hands % len(devices)) for k in range(len(devices))]
+    status.clear()
+    t_start = time.time()
     jobs = [pool.submit(_worker, state, (net.blocks_n, net.channels), cfg, share[k], seed + 7919 * k,
-                        dev, use_hand_guess, f"gpu{k}")
+                        dev, use_hand_guess, f"gpu{k}", status)
             for k, dev in enumerate(devices) if share[k] > 0]
+    while True:
+        finished, _ = wait(jobs, timeout=30)
+        if len(finished) == len(jobs):
+            break
+        if progress:
+            parts = list(status.values())
+            work = sum(p[0] for p in parts)
+            moves = sum(p[1] for p in parts)
+            elapsed = time.time() - t_start
+            progress(progress_line(work / n_hands, moves / elapsed, elapsed))
     return merge([j.result() for j in jobs])

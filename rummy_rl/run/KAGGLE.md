@@ -38,7 +38,7 @@ from kaggle_secrets import UserSecretsClient
 import os
 os.environ["WANDB_API_KEY"] = UserSecretsClient().get_secret("WANDB_API_KEY")   # skip without W&B
 
-!python -u run/train_loop.py --kaggle --wandb --resume auto --out /kaggle/working/main
+!python -u run/train_loop.py --kaggle --hours 10 --resume auto --out /kaggle/working/main
 ```
 The newest status line is also saved to `progress.txt` in the output folder.
 Every 5 iterations it plays 400 hands against the greedy bot on duplicate deals and

@@ -54,4 +54,5 @@ class Config:
 
     @classmethod
     def kaggle(cls):
-        return replace(cls(), selfplay_games=512, hands_per_iter=512, steps_per_iter=300)
+        # lr_horizon: a 10-hour Kaggle run does several hundred iterations
+        return replace(cls(), selfplay_games=512, hands_per_iter=512, steps_per_iter=300, lr_horizon=500)

@@ -54,7 +54,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tiny", action="store_true", help="small, fast settings for a laptop check")
     ap.add_argument("--kaggle", action="store_true", help="settings for a Kaggle GPU")
-    ap.add_argument("--iterations", type=int, default=None, help="stop after this many (default: 6 tiny, 200 otherwise)")
+    ap.add_argument("--iterations", type=int, default=None, help="stop after this many (default: 6 tiny, 200 otherwise, no limit with --hours)")
+    ap.add_argument("--hours", type=float, default=None,
+                    help="train for this long, then stop cleanly; no new iteration starts unless it can finish in time")
     ap.add_argument("--run", default=None, help="run name, the folder under data/ (default from the settings)")
     ap.add_argument("--resume", default=None, help="'auto' to continue data/<run>/latest.pt, or a checkpoint path")
     ap.add_argument("--no-hand-guess", action="store_true", help="comparison run: no hand-guess loss, search imagines cards uniformly")
@@ -72,7 +74,8 @@ def main(argv=None):
         cfg = replace(cfg, hand_weight=0.0, use_hand_guess=False)
     if args.eval_every is not None:
         cfg = replace(cfg, eval_every=args.eval_every)
-    iterations = args.iterations or (6 if args.tiny else 200)
+    iterations = args.iterations or (10**9 if args.hours else 6 if args.tiny else 200)
+    deadline = time.time() + args.hours * 3600 if args.hours else None
     run = args.run or ("tiny" if args.tiny else "main") + ("-nohand" if args.no_hand_guess else "")
     out_dir = args.out or os.path.join(_ROOT, "data", run)
     os.makedirs(out_dir, exist_ok=True)
@@ -109,7 +112,9 @@ def main(argv=None):
     if len(gpus) > 1:
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
-        pool = ProcessPoolExecutor(max_workers=len(gpus), mp_context=multiprocessing.get_context("spawn"))
+        ctx = multiprocessing.get_context("spawn")
+        pool = ProcessPoolExecutor(max_workers=len(gpus), mp_context=ctx)
+        status = ctx.Manager().dict()   # workers report their progress here
         print(f"Self-play on {len(gpus)} GPUs: {', '.join(torch.cuda.get_device_name(k) for k in range(len(gpus)))}", flush=True)
 
     wandb = None
@@ -117,34 +122,44 @@ def main(argv=None):
         import wandb
         wandb.init(project="rummy-rl", name=run, config=asdict(cfg), resume="allow")
 
+    longest = 0.0   # longest iteration so far, to decide whether another fits before the deadline
     for it in range(start, start + iterations):
+        if deadline and time.time() + longest > deadline:
+            progress(f"Time is up: stopped cleanly after iteration {it - 1}. Checkpoints are in {out_dir}")
+            break
         t0 = time.time()
         progress(f"iter {it}: self-play started")
         seed = int(rng.integers(1 << 62))
         if pool:
-            examples, sp = play_on_gpus(pool, net, gpus, cfg, cfg.hands_per_iter, seed, cfg.use_hand_guess)
+            examples, sp = play_on_gpus(pool, status, net, gpus, cfg, cfg.hands_per_iter, seed,
+                                        cfg.use_hand_guess, progress=progress)
         else:
             evaluator = Evaluator(net, cfg.device, use_hand_guess=cfg.use_hand_guess)
             examples, sp = play(evaluator, cfg, cfg.hands_per_iter, seed=seed, progress=progress)
         buffer.add(examples)
         t_play = time.time() - t0
 
+        t1 = time.time()
         for group in optimizer.param_groups:
             group["lr"] = lr_at_iteration(cfg, it)
         losses = train_steps(net, buffer, optimizer, cfg, rng)
+        t_train = time.time() - t1
         record = {"iteration": it, "lr": optimizer.param_groups[0]["lr"], **losses, **sp,
-                  "buffer": len(buffer), "selfplay_s": round(t_play, 1), "total_s": 0}
+                  "buffer": len(buffer), "selfplay_s": round(t_play, 1), "train_s": round(t_train, 1), "total_s": 0}
 
         line = (f"iter {it:4d}  loss: move {losses['policy']:.3f}  result {losses['value']:.4f}  "
                 f"hand {losses['hand']:.3f}  |  {sp['hands']} hands, {sp['avg_turns']:.0f} turns avg, "
-                f"takes discard {sp['pile_take_rate']:.0%}  |  {t_play:.0f}s play")
+                f"takes discard {sp['pile_take_rate']:.0%}  |  {t_play:.0f}s play, {t_train:.0f}s learning")
         if cfg.eval_every and it % cfg.eval_every == 0:
+            t2 = time.time()
             ev = vs_greedy(Evaluator(net, cfg.device, cfg.use_hand_guess), cfg.eval_pairs,
                            seed=10_000 + it, sims=cfg.eval_sims, worlds=cfg.eval_worlds,
                            c_puct=cfg.c_puct, turn_cap=cfg.turn_cap)
+            t_vs = time.time() - t2
             record["eval"] = ev
-            line += (f"  |  vs greedy: {ev['points_per_hand']:+.1f} +/- {ev['range_95']:.1f} points/hand, "
-                     f"wins {ev['win_rate']:.0%}")
+            record["vs_greedy_s"] = round(t_vs, 1)
+            line += (f", {t_vs:.0f}s vs greedy  |  vs greedy: {ev['points_per_hand']:+.1f} +/- {ev['range_95']:.1f} "
+                     f"points/hand, wins {ev['win_rate']:.0%}")
             save(os.path.join(out_dir, f"iter{it:04d}.pt"), net, optimizer, cfg, it)
         save(os.path.join(out_dir, "latest.pt"), net, optimizer, cfg, it)
         record["total_s"] = round(time.time() - t0, 1)
@@ -155,6 +170,9 @@ def main(argv=None):
             flat.update({f"eval/{k}": v for k, v in record.get("eval", {}).items()})
             wandb.log(flat, step=it)
         progress(line + f"  ({record['total_s']:.0f}s)")
+        longest = max(longest, time.time() - t0)
+    if pool:
+        pool.shutdown()
 
 
 if __name__ == "__main__":
