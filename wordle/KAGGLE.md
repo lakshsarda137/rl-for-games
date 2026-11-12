@@ -13,7 +13,7 @@ Kaggle gives 30 GPU hours per week. A session stops after at most 12 hours.
 2. **Tests** (about 1 minute on Kaggle).
 3. **Quick check** (about 2 minutes): 6 short training rounds and 2 strength checks.
    The next cell shows its charts.
-4. **The real run** (up to 10 hours). Only run it when you want to train.
+4. **Training** (3 hours per run). Continues from an earlier run's output if it is attached as input.
 5. **Charts for the real run.** Run it after cell 4 stops.
 
 ## Watching it while it runs

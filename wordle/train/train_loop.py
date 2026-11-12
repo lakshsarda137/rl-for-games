@@ -44,9 +44,9 @@ from train.network import ValueNet, batch_tensors
 from train.selfplay import format_trace, play_batch
 
 PRESETS = {
-    "tiny": dict(games=64, iterations=6, eval_every=2, eval_words=40, warmup_iters=2, hidden=64),
-    "laptop": dict(games=256, iterations=200, eval_every=5, eval_words=150, warmup_iters=3, hidden=256),
-    "kaggle": dict(games=1024, iterations=100000, eval_every=5, eval_words=400, warmup_iters=3, hidden=256),
+    "tiny": dict(games=64, iterations=6, eval_every=2, eval_words=40, warmup_iters=2, hidden=64, ckpt_every=2),
+    "laptop": dict(games=256, iterations=200, eval_every=5, eval_words=150, warmup_iters=3, hidden=256, ckpt_every=25),
+    "kaggle": dict(games=1024, iterations=100000, eval_every=5, eval_words=400, warmup_iters=3, hidden=256, ckpt_every=50),
 }
 
 
@@ -60,6 +60,7 @@ def parse_args(argv=None):
     p.add_argument("--games", type=int, default=None, help="self-play games per iteration")
     p.add_argument("--eval-every", type=int, default=None, help="iterations between strength checks (0 = never)")
     p.add_argument("--eval-words", type=int, default=None, help="secret words per strength check (each played twice)")
+    p.add_argument("--ckpt-every", type=int, default=None, help="iterations between numbered checkpoints")
     p.add_argument("--warmup-iters", type=int, default=None, help="iterations that use best_split games")
     p.add_argument("--hidden", type=int, default=None, help="network size")
     p.add_argument("--lr", type=float, default=1e-3)
@@ -153,7 +154,8 @@ def strength_check(net, device, cache, eval_secrets, trace=True):
 
 def save(path, net, opt, state, args):
     tmp = path + ".tmp"
-    torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "hidden": net.hidden,
+    """opt=None saves only the network (small file, for playing, not for resuming)."""
+    torch.save({"net": net.state_dict(), "opt": opt.state_dict() if opt else None, "hidden": net.hidden,
                 "state": state, "args": vars(args)}, tmp)
     os.replace(tmp, path)
 
@@ -184,7 +186,8 @@ def main(argv=None):
         net = ValueNet(ck["hidden"]).to(device)
         net.load_state_dict(ck["net"])
         opt = torch.optim.Adam(net.parameters(), lr=args.lr)
-        opt.load_state_dict(ck["opt"])
+        if ck["opt"]:
+            opt.load_state_dict(ck["opt"])
         state = ck["state"]
         print(f"Resumed from {resume}: iteration {state['iteration']}, {state['games']:,} games.")
     else:
@@ -272,10 +275,11 @@ def main(argv=None):
             print("  " + sample_text.replace("\n", "\n  "), flush=True)
             with open(os.path.join(args.out, "samples.txt"), "a") as f:
                 f.write(f"=== iteration {it}, {state['games']:,} games ===\n{sample_text}\n\n")
-            save(os.path.join(args.out, f"ckpt_{it:05d}.pt"), net, opt, state, args)
+            if it % args.ckpt_every == 0 or last:
+                save(os.path.join(args.out, f"ckpt_{it:05d}.pt"), net, None, state, args)
             if state["best_margin"] is None or m["margin"] > state["best_margin"]:
                 state["best_margin"] = m["margin"]
-                save(os.path.join(args.out, "best.pt"), net, opt, state, args)
+                save(os.path.join(args.out, "best.pt"), net, None, state, args)
         save(os.path.join(args.out, "latest.pt"), net, opt, state, args)
         report.write(os.path.join(args.out, "progress.html"), report.read_metrics(log.path), status, sample_text)
 
