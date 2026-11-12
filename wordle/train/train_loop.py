@@ -187,8 +187,12 @@ def main(argv=None):
         opt.load_state_dict(ck["opt"])
         state = ck["state"]
         print(f"Resumed from {resume}: iteration {state['iteration']}, {state['games']:,} games.")
-    elif args.resume == "auto":
-        print("No checkpoint found; starting fresh.")
+    else:
+        if args.resume == "auto":
+            print("No checkpoint found; starting fresh.")
+        for name in ("metrics.jsonl", "samples.txt"):  # a fresh run must not mix with an old run's numbers
+            if os.path.exists(os.path.join(args.out, name)):
+                os.remove(os.path.join(args.out, name))
     net.eval()
 
     log = Log(args.out, not args.no_wandb, vars(args))
