@@ -24,14 +24,16 @@ p { margin: 6px 0; }
 .muted { color: var(--muted); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
 .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-select, input[type=text], input[type=number] {
-  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+select, input[type=text], input[type=number], button {
+  font: inherit; font-size: .95rem; color: var(--fg); background-color: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; height: 40px; padding: 0 12px; margin: 0; vertical-align: middle;
 }
-select { max-width: 100%; }
-button {
-  font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--fg);
-  border-radius: 8px; padding: 8px 14px; cursor: pointer;
+select {
+  max-width: 100%; appearance: none; -webkit-appearance: none; padding-right: 36px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23888' stroke-width='1.6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center;
 }
+button { padding: 0 16px; cursor: pointer; white-space: nowrap; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
 .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -51,7 +53,8 @@ button:disabled { opacity: .5; cursor: default; }
 .tile.hidden { background: var(--hidden); border-color: var(--hidden); }
 .guessbox { display: flex; gap: 8px; margin-top: 12px; }
 .guessbox input { width: 9em; text-transform: uppercase; letter-spacing: .15em; font-weight: 700; }
-.error { color: var(--bad); min-height: 1.5em; }
+.error { color: var(--bad); }
+.error:empty, .muted:empty, .result:empty { display: none; }
 .result { font-size: 1.15rem; font-weight: 600; }
 ol.reasons { padding-left: 1.3em; margin: 6px 0; }
 ol.reasons li { margin-bottom: 6px; }
@@ -123,8 +126,9 @@ th:not(:first-child), td:not(:first-child) { text-align: right; }
   <!-- Mode 2 -->
   <section id="watch" class="hide">
     <div class="panel">
-      <h2>One game, guess by guess</h2>
-      <form id="watchForm" class="row" autocomplete="off">
+      <h2>One game</h2>
+      <p class="muted">Pick a secret word or leave it empty for a random one. The game then plays itself, one guess per second.</p>
+      <form id="watchForm" class="row" autocomplete="off" style="margin-top:12px">
         <label for="watchSecret">Secret word</label>
         <input id="watchSecret" type="text" maxlength="5" placeholder="random" style="width:8em;text-transform:uppercase">
         <label for="watchFirst">Goes first</label>
@@ -132,17 +136,17 @@ th:not(:first-child), td:not(:first-child) { text-align: right; }
         <button class="primary" type="submit">Start game</button>
       </form>
       <p id="watchError" class="error"></p>
-      <div class="row">
-        <button id="stepBtn" type="button" disabled>Show next guess</button>
-        <button id="allBtn" type="button" disabled>Show all guesses</button>
+      <div id="watchControls" class="row hide" style="margin-top:12px">
+        <p id="watchStatus" class="result" style="margin:0;flex:1 1 auto"></p>
+        <button id="pauseBtn" type="button">Pause</button>
+        <button id="allBtn" type="button">Skip to the end</button>
       </div>
-      <p id="watchStatus" class="result"></p>
     </div>
     <div class="boards">
       <div class="panel"><h2>The AI</h2><div id="wAiBoard" class="board"></div></div>
       <div class="panel"><h2>The simple bot</h2><p class="muted">Always picks the guess that splits the possible answers most evenly.</p><div id="wBotBoard" class="board"></div></div>
     </div>
-    <div class="panel">
+    <div id="watchLogPanel" class="panel hide">
       <h2>What happened each turn</h2>
       <ol id="watchLog" class="reasons"></ol>
     </div>
@@ -341,29 +345,50 @@ function renderWatch() {
     li.textContent = s;
     log.appendChild(li);
   });
+  $("watchLogPanel").classList.toggle("hide", shown.length === 0);
+  $("watchControls").classList.remove("hide");
   const done = watchShown >= g.turns.length;
-  $("stepBtn").disabled = done; $("allBtn").disabled = done;
+  $("pauseBtn").classList.toggle("hide", done);
+  $("allBtn").classList.toggle("hide", done);
   if (!done) {
-    $("watchStatus").textContent = `Secret word: ${g.secret.toUpperCase()}. ${plural(watchShown, "guess", "guesses")} shown.`;
+    const state = watchTimer ? "Playing" : "Paused";
+    $("watchStatus").textContent = `${state}. Secret word: ${g.secret.toUpperCase()}. Guess ${watchShown} of ${g.turns.length}.`;
   } else {
     const who = g.winner === "ai" ? "The AI wins" : g.winner === "bot" ? "The simple bot wins" : "Nobody found it, a draw";
     $("watchStatus").textContent = `${who}. Secret word: ${g.secret.toUpperCase()}. Points: the AI ${fmt(g.points.ai)}, the simple bot ${fmt(g.points.bot)}.`;
   }
 }
+let watchTimer = null;
+function stopWatchTimer() { if (watchTimer) { clearInterval(watchTimer); watchTimer = null; } }
+function startWatchTimer() {
+  stopWatchTimer();
+  watchTimer = setInterval(() => {
+    watchShown++;
+    if (watchShown >= watchGame.turns.length) stopWatchTimer();
+    renderWatch();
+  }, 1000);
+  $("pauseBtn").textContent = "Pause";
+}
 $("watchForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   $("watchError").textContent = "";
+  stopWatchTimer();
   try {
     watchGame = await api("/api/watch/game", {
       model: $("model").value, secret: $("watchSecret").value.trim() || null, ai_first: $("watchFirst").value === "ai",
     });
-    watchShown = 0;
+    watchShown = 1;  // show the first guess right away
+    startWatchTimer();
     renderWatch();
-    $("stepBtn").focus();
-  } catch (err) { $("watchError").textContent = err.message; $("watchSecret").focus(); }
+  } catch (err) { $("watchError").textContent = err.message; }
+  $("watchSecret").focus();
 });
-$("stepBtn").addEventListener("click", () => { watchShown++; renderWatch(); if (!$("stepBtn").disabled) $("stepBtn").focus(); });
-$("allBtn").addEventListener("click", () => { watchShown = watchGame.turns.length; renderWatch(); });
+$("pauseBtn").addEventListener("click", () => {
+  if (watchTimer) { stopWatchTimer(); $("pauseBtn").textContent = "Continue"; }
+  else { watchShown++; startWatchTimer(); }
+  renderWatch();
+});
+$("allBtn").addEventListener("click", () => { stopWatchTimer(); watchShown = watchGame.turns.length; renderWatch(); });
 
 $("manyForm").addEventListener("submit", async (e) => {
   e.preventDefault();
