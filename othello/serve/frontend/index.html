@@ -583,12 +583,9 @@ function onCell(i) { if (state && state.current_is_human && !state.done) doMove(
 $("newBtn").addEventListener("click", newGame);
 $("pauseBtn").addEventListener("click", () => { paused = !paused; $("pauseBtn").textContent = paused ? "Resume" : "Pause"; if (!paused) tick(); });
 $("stepBtn").addEventListener("click", () => { if (state && !state.current_is_human && !state.done) botMove(); });
-// A pick only takes effect in a new game. While the current one is untouched (no move played yet)
-// restart silently, so changing opponent doesn't need a "New Game" click.
-function restartIfUnplayed() { if (state && !state.last_move && !state.done) newGame(); }
 for (const side of ["black", "white"]) {
-  $(side + "Type").addEventListener("change", () => { syncLevel($(side + "Type"), $(side + "Level")); updateWho(); restartIfUnplayed(); });
-  $(side + "Level").addEventListener("change", () => { updateWho(); restartIfUnplayed(); });   // keep the scoreboard identity live before a game
+  $(side + "Type").addEventListener("change", () => { syncLevel($(side + "Type"), $(side + "Level")); updateWho(); });
+  $(side + "Level").addEventListener("change", updateWho);   // keep the scoreboard identity live before a game
 }
 
 // ---------- arena ----------
@@ -733,7 +730,6 @@ async function arenaControl(action) {
       $("modelsBox").hidden = false; renderCkptList();
     }
   }
-  await newGame();   // start a game immediately; "New Game" restarts with whatever players are picked
   const hints = [];
   hints.push(config.az_available
     ? "The AI learned Othello by playing against itself. Pick a difficulty next to a player; harder levels think longer before each move."
