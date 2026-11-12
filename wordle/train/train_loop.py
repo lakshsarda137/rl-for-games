@@ -144,7 +144,7 @@ def strength_check(net, device, cache, eval_secrets, trace=True):
         "margin_err": float(2 * diff.std(ddof=1) / math.sqrt(len(diff))) if len(diff) > 1 else 0.0,
         "win_pct": float(100 * ai_won.mean()),
         "loss_pct": float(100 * bot_won.mean()),
-        "draw_pct": float(100 * (1 - ai_won.mean() - bot_won.mean())),
+        "draw_pct": float(100 * (~ai_won & ~bot_won).mean()),
         "ai_win_guesses": float(guesses[ai_won].mean()) if ai_won.any() else None,
         "bot_win_guesses": float(guesses[bot_won].mean()) if bot_won.any() else None,
         "test_games": int(len(diff)),

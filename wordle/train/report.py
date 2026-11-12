@@ -91,6 +91,26 @@ pre {{ white-space:pre-wrap; font-size:13px; background:color-mix(in srgb, var(-
         f.write(page)
 
 
+def show(folder):
+    """Show progress.html inside a Jupyter or Kaggle notebook (without the page's auto-reload)."""
+    import os
+
+    from IPython.display import HTML, display
+
+    path = os.path.join(folder, "progress.html")
+    if not os.path.exists(path):
+        print(f"No progress page yet in {folder}. It appears after the first training round.")
+        return
+    with open(path) as f:
+        page = f.read().replace('<meta http-equiv="refresh" content="60">', "")
+    # An iframe keeps the page's styles from changing the notebook's own look.
+    import warnings
+
+    warnings.filterwarnings("ignore", message="Consider using IPython.display.IFrame")
+    display(HTML(f'<iframe srcdoc="{html.escape(page, quote=True)}" '
+                 'style="width:100%;height:1500px;border:0;background:white"></iframe>'))
+
+
 def read_metrics(path):
     try:
         with open(path) as f:
