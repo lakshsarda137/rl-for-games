@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wordle AI</title>
+<style>
+:root {
+  --bg: #f7f6f2; --panel: #ffffff; --fg: #1d1d1b; --muted: #6b6a64; --line: #dedcd4;
+  --green: #4f8a4b; --yellow: #c19a2e; --gray: #8a8a86; --hidden: #c9c7bf; --accent: #2f6fb3; --bad: #b3402f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161618; --panel: #1f1f22; --fg: #ececea; --muted: #a3a29c; --line: #3a3a3e;
+    --green: #4f8a4b; --yellow: #b08b25; --gray: #55555a; --hidden: #3d3d42; --accent: #6aa6e8; --bad: #e07a66;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, sans-serif; }
+main { max-width: 920px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.6rem; margin: 4px 0 12px; }
+h2 { font-size: 1.1rem; margin: 0 0 8px; }
+p { margin: 6px 0; }
+.muted { color: var(--muted); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+select, input[type=text], input[type=number] {
+  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+}
+select { max-width: 100%; }
+button {
+  font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+  border-radius: 8px; padding: 8px 14px; cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.tabs button[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.boards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 640px) { .boards { grid-template-columns: 1fr; } }
+.board { display: grid; gap: 6px; justify-content: start; }
+.brow { display: grid; grid-template-columns: repeat(5, 48px); gap: 6px; }
+@media (max-width: 380px) { .brow { grid-template-columns: repeat(5, 40px); } .tile { height: 40px !important; } }
+.tile {
+  height: 48px; border: 2px solid var(--line); border-radius: 6px; display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 1.3rem; text-transform: uppercase;
+}
+.tile.green { background: var(--green); border-color: var(--green); color: #fff; }
+.tile.yellow { background: var(--yellow); border-color: var(--yellow); color: #fff; }
+.tile.gray { background: var(--gray); border-color: var(--gray); color: #fff; }
+.tile.hidden { background: var(--hidden); border-color: var(--hidden); }
+.guessbox { display: flex; gap: 8px; margin-top: 12px; }
+.guessbox input { width: 9em; text-transform: uppercase; letter-spacing: .15em; font-weight: 700; }
+.error { color: var(--bad); min-height: 1.5em; }
+.result { font-size: 1.15rem; font-weight: 600; }
+ol.reasons { padding-left: 1.3em; margin: 6px 0; }
+ol.reasons li { margin-bottom: 6px; }
+table { border-collapse: collapse; width: 100%; max-width: 560px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+th:not(:first-child), td:not(:first-child) { text-align: right; }
+.hide { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Wordle AI</h1>
+
+  <section class="panel">
+    <div class="row">
+      <label for="model"><strong>AI model</strong></label>
+      <select id="model"></select>
+      <button id="addModel" type="button">Add a model file</button>
+      <input id="modelFile" type="file" accept=".pt" class="hide">
+    </div>
+    <p id="modelInfo" class="muted"></p>
+  </section>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tabPlay" aria-selected="true">Play against the AI</button>
+    <button role="tab" id="tabWatch" aria-selected="false">Watch the AI play the simple bot</button>
+  </div>
+
+  <!-- Mode 1 -->
+  <section id="play">
+    <div class="panel">
+      <p>You and the AI try to find the same secret word. You take turns. You only see your own colors, and the AI only sees its own. Win fast for more points: 7 minus the guesses you used. A loss costs 1 to 3 points, less if you were close.</p>
+      <p id="playStatus" class="result"></p>
+      <p id="matchLine" class="muted"></p>
+    </div>
+    <div class="boards">
+      <div class="panel">
+        <h2>Your guesses</h2>
+        <div id="youBoard" class="board"></div>
+        <form id="guessForm" class="guessbox" autocomplete="off">
+          <input id="guessInput" type="text" maxlength="5" aria-label="Your guess" placeholder="guess">
+          <button class="primary" type="submit">Guess</button>
+        </form>
+        <p id="guessHint" class="muted" style="margin:4px 0 0"></p>
+        <p id="guessError" class="error"></p>
+      </div>
+      <div class="panel">
+        <h2>The AI's guesses</h2>
+        <p id="aiHiddenNote" class="muted">Hidden until the game ends.</p>
+        <div id="aiBoard" class="board"></div>
+        <div id="aiReasons" class="hide">
+          <h2 style="margin-top:14px">How the AI chose</h2>
+          <ol id="aiReasonList" class="reasons"></ol>
+        </div>
+      </div>
+    </div>
+    <div class="panel row">
+      <button id="nextGame" class="primary hide" type="button">Next game</button>
+      <button id="newMatch" type="button">Start a new match</button>
+    </div>
+  </section>
+
+  <!-- Mode 2 -->
+  <section id="watch" class="hide">
+    <div class="panel">
+      <h2>One game, guess by guess</h2>
+      <form id="watchForm" class="row" autocomplete="off">
+        <label for="watchSecret">Secret word</label>
+        <input id="watchSecret" type="text" maxlength="5" placeholder="random" style="width:8em;text-transform:uppercase">
+        <label for="watchFirst">Goes first</label>
+        <select id="watchFirst"><option value="ai">The AI</option><option value="bot">The simple bot</option></select>
+        <button class="primary" type="submit">Start game</button>
+      </form>
+      <p id="watchError" class="error"></p>
+      <div class="row">
+        <button id="stepBtn" type="button" disabled>Show next guess</button>
+        <button id="allBtn" type="button" disabled>Show all guesses</button>
+      </div>
+      <p id="watchStatus" class="result"></p>
+    </div>
+    <div class="boards">
+      <div class="panel"><h2>The AI</h2><div id="wAiBoard" class="board"></div></div>
+      <div class="panel"><h2>The simple bot</h2><p class="muted">Always picks the guess that splits the possible answers most evenly.</p><div id="wBotBoard" class="board"></div></div>
+    </div>
+    <div class="panel">
+      <h2>What happened each turn</h2>
+      <ol id="watchLog" class="reasons"></ol>
+    </div>
+    <div class="panel">
+      <h2>Many games at once</h2>
+      <p class="muted">Each secret word is played twice, once with each player going first, so neither side gets an advantage from going first.</p>
+      <form id="manyForm" class="row" autocomplete="off">
+        <label for="manyWords">Secret words</label>
+        <input id="manyWords" type="number" min="1" max="2315" value="100" style="width:7em">
+        <button class="primary" type="submit">Play them</button>
+      </form>
+      <p id="manyStatus" class="muted"></p>
+      <table id="manyTable" class="hide">
+        <thead><tr><th></th><th>Points per game</th><th>Games won</th><th>Guesses per win</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let match = null;
+let watchGame = null, watchShown = 0;
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || "Something went wrong. Try again.");
+  return data;
+}
+const fmt = (x) => (x > 0 ? "+" : "") + x;
+const plural = (n, one, many) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+// ---------- models ----------
+async function loadModels(selectId) {
+  const list = await api("/api/models");
+  const sel = $("model");
+  sel.innerHTML = "";
+  for (const m of list) {
+    const o = document.createElement("option");
+    o.value = m.id; o.textContent = m.label; o.dataset.detail = m.detail;
+    sel.appendChild(o);
+  }
+  // Default: the newest real model file if there is one.
+  sel.value = selectId || (list[1] ? list[1].id : list[0].id);
+  showModelInfo();
+}
+function showModelInfo() {
+  const o = $("model").selectedOptions[0];
+  $("modelInfo").textContent = o ? o.dataset.detail + "." : "";
+}
+$("model").addEventListener("change", () => { showModelInfo(); newMatch(); });
+$("addModel").addEventListener("click", () => $("modelFile").click());
+$("modelFile").addEventListener("change", async () => {
+  const f = $("modelFile").files[0];
+  if (!f) return;
+  $("modelInfo").textContent = "Adding " + f.name + "...";
+  try {
+    const res = await fetch("/api/models/upload?name=" + encodeURIComponent(f.name), { method: "POST", body: f });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail);
+    await loadModels(data.id);
+    newMatch();
+  } catch (e) { $("modelInfo").textContent = e.message; }
+  $("modelFile").value = "";
+});
+
+// ---------- tabs ----------
+function showTab(name) {
+  $("tabPlay").setAttribute("aria-selected", name === "play");
+  $("tabWatch").setAttribute("aria-selected", name === "watch");
+  $("play").classList.toggle("hide", name !== "play");
+  $("watch").classList.toggle("hide", name !== "watch");
+  if (name === "play") $("guessInput").focus();
+}
+$("tabPlay").addEventListener("click", () => showTab("play"));
+$("tabWatch").addEventListener("click", () => showTab("watch"));
+
+// ---------- boards ----------
+function drawBoard(el, rows, hiddenCount = 0, total = 6) {
+  el.innerHTML = "";
+  for (let i = 0; i < total; i++) {
+    const r = document.createElement("div");
+    r.className = "brow";
+    const data = rows[i];
+    for (let j = 0; j < 5; j++) {
+      const t = document.createElement("div");
+      t.className = "tile";
+      if (data) { t.textContent = data.word[j]; t.classList.add(data.colors[j]); }
+      else if (i < hiddenCount) { t.classList.add("hidden"); }
+      r.appendChild(t);
+    }
+    el.appendChild(r);
+  }
+}
+
+// ---------- mode 1 ----------
+
+function renderMatch(v) {
+  match = v;
+  drawBoard($("youBoard"), v.your_rows);
+  $("guessError").textContent = "";
+  const n = v.games_played;
+  $("matchLine").textContent = n
+    ? `Match after ${plural(n, "game", "games")}: you ${fmt(v.match.you)} points, the AI ${fmt(v.match.ai)} points.`
+    : "First game of the match.";
+  $("guessInput").placeholder = v.over ? "" : "guess";
+  $("guessForm").querySelector("button").textContent = v.over ? "Next game" : "Guess";
+  $("guessInput").readOnly = v.over;
+  $("guessHint").textContent = v.over ? "Press Enter for the next game." : "";
+  if (!v.over) {
+    drawBoard($("aiBoard"), [], v.ai_guess_count);
+    $("aiHiddenNote").classList.remove("hide");
+    $("aiReasons").classList.add("hide");
+    const turn = v.your_rows.length === 0
+      ? (v.you_first ? "You go first. Type your first guess." : "The AI went first. Your turn.")
+      : "Your turn.";
+    $("playStatus").textContent = turn;
+    $("guessInput").focus();
+    return;
+  }
+  drawBoard($("aiBoard"), v.ai_rows);
+  $("aiHiddenNote").classList.add("hide");
+  $("aiReasons").classList.remove("hide");
+  const list = $("aiReasonList");
+  list.innerHTML = "";
+  v.ai_rows.forEach((r) => {
+    const li = document.createElement("li");
+    const opts = r.options.map((o) => `${o.word.toUpperCase()} (${fmt(o.points)})`).join(", ");
+    li.textContent = `${r.word.toUpperCase()}. ${plural(r.left_before, "possible answer", "possible answers")} before this guess. Its top choices by expected points: ${opts}.`;
+    list.appendChild(li);
+  });
+  const secret = v.secret.toUpperCase();
+  const msg = v.winner === "you" ? `You win! The word was ${secret}.`
+    : v.winner === "ai" ? `The AI wins. The word was ${secret}.`
+    : `Nobody found ${secret}. It is a draw.`;
+  $("playStatus").textContent = `${msg} Points: you ${fmt(v.points.you)}, the AI ${fmt(v.points.ai)}.`;
+  $("guessInput").focus();
+}
+
+async function newMatch() {
+  try { renderMatch(await api("/api/human/new", { model: $("model").value })); }
+  catch (e) { $("playStatus").textContent = e.message; }
+}
+$("newMatch").addEventListener("click", newMatch);
+async function nextGame() {
+  try { renderMatch(await api(`/api/human/${match.id}/next`, {})); }
+  catch (e) { $("guessError").textContent = e.message; }
+  $("guessInput").focus();
+}
+$("nextGame").addEventListener("click", nextGame);
+$("guessForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const box = $("guessInput");
+  box.focus();
+  if (match && match.over) { box.value = ""; return nextGame(); }
+  const word = box.value.trim();
+  if (!word) return;
+  try {
+    const v = await api(`/api/human/${match.id}/guess`, { word });
+    box.value = "";
+    renderMatch(v);
+  } catch (err) { $("guessError").textContent = err.message; }
+  box.focus();
+});
+
+// ---------- mode 2 ----------
+function renderWatch() {
+  const g = watchGame;
+  const shown = g.turns.slice(0, watchShown);
+  drawBoard($("wAiBoard"), shown.filter((t) => t.player === "ai"));
+  drawBoard($("wBotBoard"), shown.filter((t) => t.player === "bot"));
+  const log = $("watchLog");
+  log.innerHTML = "";
+  shown.forEach((t) => {
+    const li = document.createElement("li");
+    const who = t.player === "ai" ? "The AI" : "The simple bot";
+    let s = `${who} guessed ${t.word.toUpperCase()}. Possible answers for it: ${t.left_before.toLocaleString()} before, ${t.left_after.toLocaleString()} after.`;
+    if (t.options) s += " Its top choices by expected points: " + t.options.map((o) => `${o.word.toUpperCase()} (${fmt(o.points)})`).join(", ") + ".";
+    li.textContent = s;
+    log.appendChild(li);
+  });
+  const done = watchShown >= g.turns.length;
+  $("stepBtn").disabled = done; $("allBtn").disabled = done;
+  if (!done) {
+    $("watchStatus").textContent = `Secret word: ${g.secret.toUpperCase()}. ${plural(watchShown, "guess", "guesses")} shown.`;
+  } else {
+    const who = g.winner === "ai" ? "The AI wins" : g.winner === "bot" ? "The simple bot wins" : "Nobody found it, a draw";
+    $("watchStatus").textContent = `${who}. Secret word: ${g.secret.toUpperCase()}. Points: the AI ${fmt(g.points.ai)}, the simple bot ${fmt(g.points.bot)}.`;
+  }
+}
+$("watchForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("watchError").textContent = "";
+  try {
+    watchGame = await api("/api/watch/game", {
+      model: $("model").value, secret: $("watchSecret").value.trim() || null, ai_first: $("watchFirst").value === "ai",
+    });
+    watchShown = 0;
+    renderWatch();
+    $("stepBtn").focus();
+  } catch (err) { $("watchError").textContent = err.message; $("watchSecret").focus(); }
+});
+$("stepBtn").addEventListener("click", () => { watchShown++; renderWatch(); if (!$("stepBtn").disabled) $("stepBtn").focus(); });
+$("allBtn").addEventListener("click", () => { watchShown = watchGame.turns.length; renderWatch(); });
+
+$("manyForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const n = parseInt($("manyWords").value, 10) || 100;
+  $("manyStatus").textContent = `Playing ${(2 * n).toLocaleString()} games...`;
+  $("manyTable").classList.add("hide");
+  try {
+    const r = await api("/api/watch/many", { model: $("model").value, words: n });
+    const body = $("manyTable").querySelector("tbody");
+    const line = (name, s) => `<tr><td>${name}</td><td>${fmt(s.points)}</td><td>${s.win_pct}%</td><td>${s.guesses_per_win ?? "none"}</td></tr>`;
+    body.innerHTML = line("The AI", r.ai) + line("The simple bot", r.bot);
+    $("manyTable").classList.remove("hide");
+    $("manyStatus").textContent = `${r.games.toLocaleString()} games in ${r.seconds} seconds. Draws: ${r.draw_pct}%.`;
+  } catch (err) { $("manyStatus").textContent = err.message; }
+  $("manyWords").focus();
+});
+
+drawBoard($("wAiBoard"), []);
+drawBoard($("wBotBoard"), []);
+loadModels().then(newMatch).catch((e) => { $("modelInfo").textContent = e.message; });
+</script>
+</body>
+</html>
