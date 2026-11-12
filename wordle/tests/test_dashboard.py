@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(HERE, ".."))
 from fastapi.testclient import TestClient
 
 from engine import words
+from engine.game import Game
 from serve import app as dash
 from train import train_loop
 
@@ -69,6 +70,33 @@ def main():
             assert v["over"] and v["winner"] == "you" and v["points"]["you"] == 6
         else:
             assert v["over"] and v["winner"] in ("you", "ai")
+
+        # You can choose the secret word; words outside the answer list are refused.
+        v = c.post("/api/human/new", json={"model": model, "secret": "crane"}).json()
+        assert v["chosen_word"] and dash.matches[v["id"]]["game"].secret == "crane"
+        assert c.post("/api/human/new", json={"model": model, "secret": "zzzzz"}).status_code == 400
+        v = c.post(f"/api/human/{v['id']}/next", json={"secret": "pupil"}).json()
+        assert v["chosen_word"] and dash.matches[v["id"]]["game"].secret == "pupil"
+        v = c.post(f"/api/human/{v['id']}/next", json={}).json()
+        assert not v["chosen_word"]
+
+        # The AI never sees the secret word (W4.3).
+        net, _ = dash.load_model(model)
+        # 1. Remove the secret from the game object: the AI can still choose, so it never reads it.
+        g = Game(secret="crane", players=2)
+        g.guess("slate")  # player 0 (the human) guesses
+        del g.secret, g.secret_index
+        dash.ai_turn(net, g)
+        # 2. Same colors seen means same choice, whatever the secret is.
+        firsts = set()
+        for secret in ["crane", "pupil", "zesty", "gawky", "abbey", "those", "fjord", "vivid"]:
+            g = Game(secret=secret, players=2)
+            firsts.add(dash.ai_turn(net, g)[0])
+        assert len(firsts) == 1, firsts
+        # 3. The AI's own choice function has no way to receive the secret.
+        import inspect
+        assert list(inspect.signature(dash.ai_choose).parameters) == [
+            "net", "my_candidates", "guesses_used", "went_first", "top_k"]
 
         # Mode 2: one game, then many.
         g = c.post("/api/watch/game", json={"model": model, "secret": "crane", "ai_first": False}).json()

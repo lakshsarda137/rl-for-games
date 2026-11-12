@@ -108,9 +108,15 @@ th:not(:first-child), td:not(:first-child) { text-align: right; }
         </div>
       </div>
     </div>
-    <div class="panel row">
-      <button id="nextGame" class="primary hide" type="button">Next game</button>
-      <button id="newMatch" type="button">Start a new match</button>
+    <div class="panel">
+      <h2>Choose the secret word yourself</h2>
+      <p class="muted">Type a word and press Enter to start a game with it. Leave the box empty for a random word. The AI is never told the word: it only sees its own colors, the same as you.</p>
+      <form id="secretForm" class="row" autocomplete="off">
+        <input id="playSecret" type="text" maxlength="5" placeholder="random" aria-label="Secret word" style="width:8em;text-transform:uppercase">
+        <button class="primary" type="submit">Start a game with this word</button>
+        <button id="newMatch" type="button">Start a new match</button>
+      </form>
+      <p id="secretError" class="error"></p>
     </div>
   </section>
 
@@ -257,7 +263,7 @@ function renderMatch(v) {
     const turn = v.your_rows.length === 0
       ? (v.you_first ? "You go first. Type your first guess." : "The AI went first. Your turn.")
       : "Your turn.";
-    $("playStatus").textContent = turn;
+    $("playStatus").textContent = (v.chosen_word ? "You chose the secret word. " : "") + turn;
     $("guessInput").focus();
     return;
   }
@@ -280,17 +286,30 @@ function renderMatch(v) {
   $("guessInput").focus();
 }
 
-async function newMatch() {
-  try { renderMatch(await api("/api/human/new", { model: $("model").value })); }
-  catch (e) { $("playStatus").textContent = e.message; }
+async function newMatch(secret = null) {
+  try { renderMatch(await api("/api/human/new", { model: $("model").value, secret })); return true; }
+  catch (e) { $("playStatus").textContent = e.message; return false; }
 }
-$("newMatch").addEventListener("click", newMatch);
-async function nextGame() {
-  try { renderMatch(await api(`/api/human/${match.id}/next`, {})); }
+$("newMatch").addEventListener("click", () => newMatch());
+async function nextGame(secret = null) {
+  try { renderMatch(await api(`/api/human/${match.id}/next`, { secret })); }
   catch (e) { $("guessError").textContent = e.message; }
   $("guessInput").focus();
 }
-$("nextGame").addEventListener("click", nextGame);
+$("secretForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const box = $("playSecret");
+  const secret = box.value.trim() || null;
+  $("secretError").textContent = "";
+  try {
+    const path = match ? `/api/human/${match.id}/next` : "/api/human/new";
+    renderMatch(await api(path, match ? { secret } : { model: $("model").value, secret }));
+    box.value = "";
+  } catch (err) {
+    $("secretError").textContent = err.message;
+    box.focus();
+  }
+});
 $("guessForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const box = $("guessInput");

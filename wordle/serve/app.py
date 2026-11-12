@@ -146,15 +146,26 @@ async def upload_model(request: Request, name: str):
 
 # ---------- the AI's choice, with its reasons ----------
 
-def ai_choose(net, game, top_k=3):
-    """Pick the AI's guess for the player whose turn it is; also return its top choices."""
-    player = game.to_play
-    pos = cache.get(np.asarray(game.candidates))
-    q = guess_values(net, "cpu", [pos], game.guesses_made(player), player == 0)[0]
+def ai_choose(net, my_candidates, guesses_used, went_first, top_k=3):
+    """Pick the AI's guess and return its top choices.
+
+    The AI gets only what a player may know (RULES.md W4.3): the answers that
+    still fit its own colors, how many guesses it has made, and whether it
+    went first. It is never given the secret word or the other player's
+    guesses, so it cannot cheat.
+    """
+    pos = cache.get(np.asarray(my_candidates))
+    q = guess_values(net, "cpu", [pos], guesses_used, went_first)[0]
     best = np.argsort(-q)[:top_k]
     word = words.GUESSES[int(pos.guesses[best[0]])]
     options = [{"word": words.GUESSES[int(pos.guesses[i])], "points": round(float(q[i]), 2)} for i in best]
     return word, {"left_before": int(pos.n), "options": options}
+
+
+def ai_turn(net, game):
+    """Hand the AI only its own view of the game, never the game itself."""
+    me = game.to_play
+    return ai_choose(net, game.candidates_of(me), game.guesses_made(me), me == 0)
 
 
 def row(word, pattern, extra=None):
@@ -171,6 +182,21 @@ matches = {}
 
 class NewHuman(BaseModel):
     model: str
+    secret: str | None = None
+
+
+class NextGame(BaseModel):
+    secret: str | None = None
+
+
+def check_secret(secret):
+    """None for a random word, or the chosen word if it is one of the 2,315 possible answers."""
+    word = (secret or "").strip().lower()
+    if not word:
+        return None
+    if word not in words.ANSWERS:
+        raise HTTPException(400, f"{word.upper()} is not one of the 2,315 possible secret words.")
+    return word
 
 
 class Guess(BaseModel):
@@ -188,9 +214,9 @@ def human_view(m):
         "ai_guess_count": g.guesses_made(ai),
         "your_answers_left": int(len(g.candidates_of(you))),
         "over": g.over,
+        "chosen_word": m["chosen"],
         "match": m["totals"],
         "games_played": m["games"],
-        "letters": letter_status(g.own_history(you)),
     }
     if g.over:
         scores = g.duel_scores()
@@ -203,22 +229,11 @@ def human_view(m):
     return view
 
 
-def letter_status(history):
-    """Best color seen so far for each letter, for the on-screen keyboard."""
-    rank = {"gray": 0, "yellow": 1, "green": 2}
-    out = {}
-    for w, p in history:
-        for ch, c in zip(w, words.pattern_to_colors(p)):
-            if ch not in out or rank[c] > rank[out[ch]]:
-                out[ch] = c
-    return out
-
-
 def ai_turns(m):
     """Let the AI play while it is the AI's turn."""
     g = m["game"]
     while not g.over and g.to_play != m["you"]:
-        word, note = ai_choose(m["net"], g)
+        word, note = ai_turn(m["net"], g)
         m["notes"].append(note)
         g.guess(word)
 
@@ -233,8 +248,9 @@ def finish_if_over(m):
         m["counted"] = True
 
 
-def start_game(m):
-    m["game"] = Game(players=2)
+def start_game(m, secret=None):
+    m["game"] = Game(secret=secret, players=2)
+    m["chosen"] = secret is not None
     m["notes"] = []
     m["counted"] = False
     ai_turns(m)
@@ -244,10 +260,11 @@ def start_game(m):
 def human_new(req: NewHuman):
     with lock:
         net, _ = load_model(req.model)
+        secret = check_secret(req.secret)
         mid = uuid.uuid4().hex[:12]
         m = {"id": mid, "model": req.model, "net": net, "you": random.randrange(2),
              "totals": {"you": 0, "ai": 0}, "games": 0}
-        start_game(m)
+        start_game(m, secret)
         matches[mid] = m
         return human_view(m)
 
@@ -278,11 +295,12 @@ def human_guess(mid: str, req: Guess):
 
 
 @app.post("/api/human/{mid}/next")
-def human_next(mid: str):
+def human_next(mid: str, req: NextGame | None = None):
     with lock:
         m = get_match(mid)
+        secret = check_secret(req.secret if req else None)
         m["you"] = 1 - m["you"]  # W4.6: the first player alternates
-        start_game(m)
+        start_game(m, secret)
         finish_if_over(m)
         return human_view(m)
 
@@ -314,7 +332,7 @@ def watch_game(req: WatchGame):
             seat = g.to_play
             before = int(len(g.candidates))
             if seat == ai:
-                word, note = ai_choose(net, g)
+                word, note = ai_turn(net, g)
             else:
                 word, note = bots.best_split(g), {"left_before": before}
             p = g.guess(word)
